@@ -1,28 +1,160 @@
 {
-  "name": "Your Name",
-  "email": "you@example.com",
-  "experience": "5+ years in performance marketing",
-  "skills": [
-    "Google Ads",
-    "Meta Ads",
-    "Programmatic Advertising",
-    "Analytics",
-    "SQL",
-    "Python",
-    "A/B Testing",
-    "Attribution Modeling",
-    "Media Buying",
-    "Campaign Optimization"
+  "name": "Aishik Dutta",
+  "title": "Performance Marketer",
+  "experience_years": 8,
+  "current_company": "Alo Creative LLP",
+  "current_role": "Performance Marketer",
+  "location": "Mumbai",
+  "notice_period": "2 months",
+  "work_preference": "Open to anything including relocation",
+
+  "contact": {
+    "email": "dutta1890@gmail.com",
+    "phone": "+91-8741-03-4164",
+    "linkedin": "linkedin.com/in/aishikduttaoct18"
+  },
+
+  "education": [
+    {"degree": "Masters in Finance", "institution": "MLS University", "year": "2011-2013"},
+    {"degree": "Bachelor of Commerce", "institution": "MLS University", "year": "2008-2011"}
   ],
+
+  "languages": ["English", "Hindi", "Bengali"],
+
   "target_roles": [
-    "Performance Marketing Manager",
-    "Paid Media Manager",
-    "Growth Marketing Manager",
-    "Digital Marketing Director",
-    "Head of Performance Marketing"
+    "Senior Performance Marketing Manager",
+    "Performance Marketing Lead",
+    "Media Lead",
+    "Media Manager",
+    "Digital Marketing Manager"
   ],
-  "industries": ["E-commerce", "SaaS", "FinTech", "Consumer Tech"],
-  "preferred_locations": ["Remote", "New York", "San Francisco", "Austin"],
-  "min_salary": 120000,
-  "notes": "Prefer companies with strong data culture and growth-stage opportunities."
+
+  "target_locations": {
+    "india": {
+      "cities": ["Mumbai", "Pune"],
+      "visa_required": false,
+      "salary_target": "₹15-25 LPA"
+    },
+    "singapore": {
+      "cities": ["Singapore"],
+      "visa_required": true,
+      "salary_target": "SGD 60-80K"
+    },
+    "uae": {
+      "cities": ["Dubai", "Abu Dhabi"],
+      "visa_required": true,
+      "salary_target": "AED 25-30K/month"
+    },
+    "europe": {
+      "cities": ["Germany", "Netherlands", "Sweden", "Portugal", "Denmark"],
+      "visa_required": true,
+      "salary_target": "€60-70K"
+    }
+  },
+
+  "channel_expertise": {
+    "expert": [],
+    "proficient": ["Google Ads", "Meta Ads", "YouTube Ads", "LinkedIn Ads", "TikTok Ads"],
+    "basic": ["Amazon Ads", "SEO", "Email Marketing"],
+    "none": ["Programmatic DV360", "The Trade Desk"]
+  },
+
+  "certifications": [
+    "Google Ads Certified",
+    "Google Analytics Certified",
+    "HubSpot Certified"
+  ],
+
+  "budget_managed": {
+    "monthly": "₹50 Lakhs - 1 Cr",
+    "annual": "₹6-12 Cr"
+  },
+
+  "team_size": "1-2 people",
+
+  "industries_worked": [
+    "Healthcare & Pharma",
+    "Hospitality & Real Estate",
+    "Retail & E-commerce",
+    "FMCG/Food",
+    "Engineering & B2B"
+  ],
+
+  "international_markets": ["UAE", "KSA", "Kuwait", "Oman", "Australia", "New Zealand"],
+
+  "company_preferences": [
+    "Performance/Media Agency",
+    "Creative Agency",
+    "D2C / E-commerce",
+    "Quick-commerce",
+    "FMCG/CPG brands",
+    "B2B",
+    "Big Ad Agency"
+  ],
+
+  "key_achievements": [
+    {
+      "client": "HealthHub (Al-Futtaim)",
+      "metrics": "24M impressions, 178K clicks, 200-300 qualified leads",
+      "channels": "Meta, YouTube, Google"
+    },
+    {
+      "client": "Gulf Pharmacy",
+      "metrics": "100K AED revenue on 72K AED spend (1.38x ROAS)",
+      "channels": "Meta Shopping, Google Search"
+    },
+    {
+      "client": "Géant Hypermarket",
+      "metrics": "5M impressions, 21M video views, 70% reach",
+      "channels": "Multi-channel"
+    },
+    {
+      "client": "Camelicious",
+      "metrics": "$170K reach, $600K engagement, 5-6K/month Amazon sales",
+      "channels": "Meta, Amazon"
+    },
+    {
+      "client": "Al-Futtaim Engineering",
+      "metrics": "400+ B2B leads, AED 50K MSRP B2C sales",
+      "channels": "Instagram, Google Search"
+    },
+    {
+      "client": "HCG Oncology",
+      "metrics": "5% conversion rate, 60+ monthly leads",
+      "channels": "Google SKAG"
+    }
+  ],
+
+  "work_history": [
+    {
+      "company": "Alo Creative LLP",
+      "role": "Performance Marketer",
+      "duration": "2022 - Present",
+      "type": "Agency"
+    },
+    {
+      "company": "Finplus",
+      "role": "Performance Marketing Manager",
+      "duration": "2021 - 2022",
+      "type": "Fintech"
+    },
+    {
+      "company": "Digi Trainers/Webalysis",
+      "role": "Digital Marketing Manager",
+      "duration": "2019 - 2020",
+      "type": "Agency"
+    },
+    {
+      "company": "Prarthana Associates",
+      "role": "Digital Marketing Executive",
+      "duration": "2016 - 2018",
+      "type": "Agency"
+    },
+    {
+      "company": "Cognus Technology",
+      "role": "Content Writing Executive",
+      "duration": "2014 - 2016",
+      "type": "Content"
+    }
+  ]
 }

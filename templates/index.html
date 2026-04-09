@@ -81,7 +81,10 @@
           <tr class="border-b border-gray-700 text-xs text-gray-400 uppercase tracking-wider">
             <th class="px-6 py-3 text-left">Company</th>
             <th class="px-6 py-3 text-left">Role</th>
+            <th class="px-6 py-3 text-left">Location</th>
             <th class="px-6 py-3 text-left">Score</th>
+            <th class="px-6 py-3 text-left">Grade</th>
+            <th class="px-6 py-3 text-left">Rec.</th>
             <th class="px-6 py-3 text-left">Status</th>
             <th class="px-6 py-3 text-left">Date</th>
           </tr>
@@ -91,13 +94,39 @@
           <tr class="hover:bg-gray-700/30 transition-colors">
             <td class="px-6 py-4 font-medium text-white">{{ app.company }}</td>
             <td class="px-6 py-4 text-gray-300">{{ app.role }}</td>
+            <td class="px-6 py-4 text-gray-500">{{ app.location or '—' }}</td>
             <td class="px-6 py-4">
-              {% if app.score %}
+              {% if app.score is not none %}
                 <span class="font-semibold
-                  {% if app.score >= 75 %}text-green-400
-                  {% elif app.score >= 50 %}text-yellow-400
+                  {% if app.score >= 4 %}text-green-400
+                  {% elif app.score >= 2.5 %}text-yellow-400
                   {% else %}text-red-400{% endif %}">
-                  {{ app.score | int }}
+                  {{ "%.1f"|format(app.score) }}/5
+                </span>
+              {% else %}
+                <span class="text-gray-600">—</span>
+              {% endif %}
+            </td>
+            <td class="px-6 py-4">
+              {% if app.grade %}
+                <span class="font-bold
+                  {% if app.grade == 'A' %}text-green-400
+                  {% elif app.grade == 'B' %}text-blue-400
+                  {% elif app.grade == 'C' %}text-yellow-400
+                  {% else %}text-red-400{% endif %}">
+                  {{ app.grade }}
+                </span>
+              {% else %}
+                <span class="text-gray-600">—</span>
+              {% endif %}
+            </td>
+            <td class="px-6 py-4">
+              {% if app.recommendation %}
+                <span class="px-2 py-0.5 rounded text-xs font-medium
+                  {% if app.recommendation == 'apply' %}bg-green-900 text-green-300
+                  {% elif app.recommendation == 'reach' %}bg-yellow-900 text-yellow-300
+                  {% else %}bg-red-900 text-red-300{% endif %}">
+                  {{ app.recommendation | capitalize }}
                 </span>
               {% else %}
                 <span class="text-gray-600">—</span>
@@ -105,11 +134,11 @@
             </td>
             <td class="px-6 py-4">
               <span class="px-2 py-0.5 rounded-full text-xs font-medium
-                {% if app.status == 'applied' %}bg-indigo-900 text-indigo-300
-                {% elif app.status == 'interview' %}bg-green-900 text-green-300
-                {% elif app.status == 'skip' %}bg-red-900 text-red-300
+                {% if app.status == 'Applied' %}bg-indigo-900 text-indigo-300
+                {% elif app.status == 'Interview' %}bg-green-900 text-green-300
+                {% elif app.status == 'Rejected' %}bg-red-900 text-red-300
                 {% else %}bg-gray-700 text-gray-300{% endif %}">
-                {{ app.status | capitalize }}
+                {{ app.status }}
               </span>
             </td>
             <td class="px-6 py-4 text-gray-500">

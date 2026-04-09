@@ -9,6 +9,7 @@ A job search automation system for performance marketing roles built with Flask.
 - **AI Integration**: Anthropic Claude (`claude-sonnet-4-20250514`)
 - **Frontend**: Jinja2 templates, Tailwind CSS (CDN), HTMX (CDN)
 - **Port**: 5000
+- **Profile**: Aishik Dutta — 8 years performance marketing, Mumbai-based, open to relocation
 
 ## Project Structure
 
@@ -37,11 +38,20 @@ career-ops/
 └── tracker/                 # Scan history files directory
 ```
 
+## Database Models
+
+- **JobPosting** — Deduplication table; keyed by SHA-256 hash of `normalize(company|role|location)`. Tracks `times_seen` and accumulates duplicate URLs.
+- **Application** — Main tracker; linked to `JobPosting`. Stores score (0–5), grade (A–F), recommendation, visa_sponsorship, evaluation JSON, and status lifecycle.
+- **ScanHistory** — Records each scanned URL and its result (new / duplicate / skipped).
+
+Helper functions in `models/database.py`: `create_job_hash()`, `check_duplicate()`, `record_job_posting()`, `get_or_create_posting()`.
+
 ## Key Routes
 
 - `GET /` — Dashboard with stats + applications tracker table
 - `POST /evaluate` — Evaluate job description via Claude API (JSON)
-- `POST /api/save-job` — Save evaluated job to SQLite with dedup check
+- `POST /api/save-job` — Save evaluated job; deduplicates via `get_or_create_posting()`
+- `GET /api/profile` — Returns full `data/profile.json` as JSON
 - `GET /api/health` — Health check (DB status + timestamp)
 
 ## Environment Variables

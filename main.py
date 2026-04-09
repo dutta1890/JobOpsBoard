@@ -3,8 +3,15 @@ import logging
 import os
 from datetime import datetime, date
 
-from flask import Flask, jsonify, render_template, request, flash
-from models.database import db, JobApplication, ScanHistory
+from flask import Flask, jsonify, render_template, request
+from models.database import (
+    db,
+    Application,
+    JobPosting,
+    ScanHistory,
+    get_or_create_posting,
+    create_job_hash,
+)
 from config import Config
 
 logging.basicConfig(
@@ -12,6 +19,27 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+PROFILE_PATH = os.path.join(os.path.dirname(__file__), "data", "profile.json")
+
+
+def load_profile() -> dict:
+    try:
+        with open(PROFILE_PATH) as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"Could not load profile.json: {e}")
+        return {}
+
+
+def load_json(path: str) -> dict:
+    try:
+        full_path = os.path.join(os.path.dirname(__file__), path)
+        with open(full_path) as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"Could not load {path}: {e}")
+        return {}
 
 
 def create_app():
@@ -24,25 +52,17 @@ def create_app():
         db.create_all()
         logger.info("Database tables created/verified.")
 
-    def load_json(path):
-        try:
-            with open(os.path.join(os.path.dirname(__file__), path)) as f:
-                return json.load(f)
-        except Exception as e:
-            logger.warning(f"Could not load {path}: {e}")
-            return {}
-
     @app.route("/")
     def index():
-        applications = JobApplication.query.order_by(
-            JobApplication.created_at.desc()
+        applications = Application.query.order_by(
+            Application.created_at.desc()
         ).all()
 
         total = len(applications)
-        applied = sum(1 for a in applications if a.status == "applied")
-        interviews = sum(1 for a in applications if a.status == "interview")
+        applied = sum(1 for a in applications if a.status == "Applied")
+        interviews = sum(1 for a in applications if a.status == "Interview")
         scores = [a.score for a in applications if a.score is not None]
-        avg_score = round(sum(scores) / len(scores)) if scores else 0
+        avg_score = round(sum(scores) / len(scores), 1) if scores else 0
 
         stats = {
             "total": total,
@@ -77,7 +97,7 @@ def create_app():
             text = parsed["text"]
             meta = extract_company_role(text)
 
-            profile = load_json("data/profile.json")
+            profile = load_profile()
             result = evaluate_job(text, profile)
 
             if not result["success"]:
@@ -92,6 +112,7 @@ def create_app():
                     "url": parsed.get("url"),
                     "title": parsed.get("title", ""),
                 },
+                "jd_text": text,
             })
 
         except Exception as e:
@@ -104,38 +125,76 @@ def create_app():
             body = request.get_json(silent=True) or {}
             data = body.get("data", {})
             meta = body.get("meta", {})
+            jd_text = body.get("jd_text", "")
 
-            company = meta.get("company") or "Unknown"
-            role = meta.get("role") or "Unknown"
+            company = (meta.get("company") or "Unknown").strip()
+            role = (meta.get("role") or "Unknown").strip()
+            location = (meta.get("location") or "").strip()
+            url = meta.get("url")
+            platform = meta.get("platform", "manual")
 
-            from services.dedup import is_duplicate
-            existing = JobApplication.query.all()
-            dup = is_duplicate(company, role, existing)
+            posting, is_new = get_or_create_posting({
+                "company": company,
+                "role": role,
+                "location": location,
+                "url": url,
+                "platform": platform,
+            })
 
-            if dup["is_duplicate"]:
+            if not is_new:
                 return jsonify({
                     "success": False,
-                    "error": f"Duplicate detected: similar job already tracked (similarity={dup['similarity']}%).",
+                    "error": f"Duplicate detected: this job has been seen {posting.times_seen} time(s) already.",
                 })
 
-            job = JobApplication(
+            score_raw = data.get("score")
+            score = float(score_raw) / 20 if score_raw is not None else None
+
+            def score_to_grade(s):
+                if s is None:
+                    return None
+                if s >= 4.5:
+                    return "A"
+                if s >= 3.5:
+                    return "B"
+                if s >= 2.5:
+                    return "C"
+                if s >= 1.5:
+                    return "D"
+                return "F"
+
+            application = Application(
+                job_posting_id=posting.id,
                 company=company,
                 role=role,
-                url=meta.get("url"),
-                score=data.get("score"),
-                status="pending",
-                evaluation=json.dumps(data),
-                jd_text=body.get("jd_text", ""),
+                location=location,
+                url=url,
+                platform=platform,
+                score=score,
+                grade=score_to_grade(score),
+                archetype=data.get("archetype"),
+                recommendation=data.get("recommendation"),
+                visa_sponsorship=data.get("visa_sponsorship", "unclear"),
+                evaluation_json=json.dumps(data),
+                jd_text=jd_text,
+                status="Evaluated",
             )
-            db.session.add(job)
+            db.session.add(application)
             db.session.commit()
 
-            return jsonify({"success": True, "id": job.id})
+            return jsonify({"success": True, "id": application.id})
 
         except Exception as e:
             logger.exception("Unhandled error in /api/save-job")
             db.session.rollback()
             return jsonify({"success": False, "error": "Failed to save job."}), 500
+
+    @app.route("/api/profile")
+    def api_profile():
+        profile = load_profile()
+        if not profile:
+            return jsonify({"error": "Profile not found"}), 404
+        return jsonify(profile)
 
     @app.route("/api/health")
     def health():
