@@ -42,6 +42,20 @@ def load_json(path: str) -> dict:
         return {}
 
 
+def _score_to_grade(score: float | None) -> str | None:
+    if score is None:
+        return None
+    if score >= 4.5:
+        return "A"
+    if score >= 4.0:
+        return "B"
+    if score >= 3.5:
+        return "C"
+    if score >= 3.0:
+        return "D"
+    return "F"
+
+
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
@@ -87,7 +101,7 @@ def create_app():
             if not jd_text:
                 return jsonify({"success": False, "error": "No job description provided."}), 400
 
-            from services.job_parser import parse_job_input, extract_company_role
+            from services.job_parser import parse_job_input
             from services.claude_client import evaluate_job
 
             parsed = parse_job_input(jd_text)
@@ -95,20 +109,19 @@ def create_app():
                 return jsonify({"success": False, "error": parsed.get("error", "Failed to parse input.")}), 400
 
             text = parsed["text"]
-            meta = extract_company_role(text)
-
-            profile = load_profile()
-            result = evaluate_job(text, profile)
+            result = evaluate_job(text)
 
             if not result["success"]:
                 return jsonify({"success": False, "error": result.get("error", "Evaluation failed.")}), 500
 
+            data = result["data"]
             return jsonify({
                 "success": True,
-                "data": result["data"],
+                "data": data,
                 "meta": {
-                    "company": meta.get("company", ""),
-                    "role": meta.get("role", ""),
+                    "company": data.get("company", ""),
+                    "role": data.get("role", ""),
+                    "location": data.get("location", ""),
                     "url": parsed.get("url"),
                     "title": parsed.get("title", ""),
                 },
@@ -148,20 +161,9 @@ def create_app():
                 })
 
             score_raw = data.get("score")
-            score = float(score_raw) / 20 if score_raw is not None else None
+            score = float(score_raw) if score_raw is not None else None
 
-            def score_to_grade(s):
-                if s is None:
-                    return None
-                if s >= 4.5:
-                    return "A"
-                if s >= 3.5:
-                    return "B"
-                if s >= 2.5:
-                    return "C"
-                if s >= 1.5:
-                    return "D"
-                return "F"
+            grade = data.get("grade") or _score_to_grade(score)
 
             application = Application(
                 job_posting_id=posting.id,
@@ -171,7 +173,7 @@ def create_app():
                 url=url,
                 platform=platform,
                 score=score,
-                grade=score_to_grade(score),
+                grade=grade,
                 archetype=data.get("archetype"),
                 recommendation=data.get("recommendation"),
                 visa_sponsorship=data.get("visa_sponsorship", "unclear"),
