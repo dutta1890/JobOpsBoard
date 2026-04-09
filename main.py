@@ -9,8 +9,6 @@ from models.database import (
     Application,
     JobPosting,
     ScanHistory,
-    get_or_create_posting,
-    create_job_hash,
 )
 from config import Config
 
@@ -140,29 +138,54 @@ def create_app():
             meta = body.get("meta", {})
             jd_text = body.get("jd_text", "")
 
-            company = (meta.get("company") or "Unknown").strip()
-            role = (meta.get("role") or "Unknown").strip()
-            location = (meta.get("location") or "").strip()
-            url = meta.get("url")
+            company = (meta.get("company") or data.get("company") or "Unknown").strip()
+            role = (meta.get("role") or data.get("role") or "Unknown").strip()
+            location = (meta.get("location") or data.get("location") or "").strip()
+            url = meta.get("url") or data.get("url")
             platform = meta.get("platform", "manual")
 
-            posting, is_new = get_or_create_posting({
-                "company": company,
-                "role": role,
-                "location": location,
-                "url": url,
-                "platform": platform,
-            })
+            # ── 3-layer deduplication ──────────────────────────────────────
+            from services.dedup import is_duplicate as check_dup
+            dedup = check_dup(url or "", company, role, location)
 
-            if not is_new:
+            if dedup["is_duplicate"]:
+                existing = dedup["existing_posting"]
+                dup_type = dedup["duplicate_type"]
+                times_seen = getattr(existing, "times_seen", "?") if existing else "?"
+                msg = {
+                    "exact_url": "This exact URL has already been saved.",
+                    "hash_match": f"This job (normalised match) has been seen {times_seen}x already.",
+                    "fuzzy_match": "A very similar job already exists in your tracker.",
+                }.get(dup_type, "Duplicate detected.")
                 return jsonify({
                     "success": False,
-                    "error": f"Duplicate detected: this job has been seen {posting.times_seen} time(s) already.",
+                    "duplicate": True,
+                    "duplicate_type": dup_type,
+                    "error": msg,
+                    "existing_id": existing.applications[0].id
+                    if existing and existing.applications
+                    else None,
                 })
+            # ──────────────────────────────────────────────────────────────
+
+            # Create JobPosting record
+            from models.database import _normalize
+            posting = JobPosting(
+                job_hash=dedup["job_hash"],
+                company_normalized=_normalize(company),
+                role_normalized=_normalize(role),
+                location=location,
+                first_seen_url=url,
+                first_seen_platform=platform,
+                first_seen_date=datetime.utcnow(),
+                duplicate_urls="[]",
+                times_seen=1,
+            )
+            db.session.add(posting)
+            db.session.flush()
 
             score_raw = data.get("score")
             score = float(score_raw) if score_raw is not None else None
-
             grade = data.get("grade") or _score_to_grade(score)
 
             application = Application(
@@ -182,8 +205,19 @@ def create_app():
                 status="Evaluated",
             )
             db.session.add(application)
-            db.session.commit()
 
+            # Record URL in ScanHistory so Layer-1 catches it on future saves
+            if url:
+                existing_scan = ScanHistory.query.filter_by(url=url).first()
+                if not existing_scan:
+                    db.session.add(ScanHistory(
+                        url=url,
+                        platform=platform,
+                        scanned_at=datetime.utcnow(),
+                        result="new",
+                    ))
+
+            db.session.commit()
             return jsonify({"success": True, "id": application.id})
 
         except Exception as e:

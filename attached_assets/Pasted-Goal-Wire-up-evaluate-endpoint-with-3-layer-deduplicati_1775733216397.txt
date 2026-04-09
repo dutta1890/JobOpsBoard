@@ -1,0 +1,339 @@
+Goal
+Wire up /evaluate endpoint with 3-layer deduplication.
+Prompt for Replit AI
+Add evaluation endpoint and deduplication logic to Career-Ops.
+
+## 1. SERVICES/DEDUP.PY
+
+Create 3-layer deduplication:
+
+import re
+import hashlib
+from fuzzywuzzy import fuzz
+from models.database import JobPosting, db
+
+def normalize_company(name: str) -> str:
+    """Normalize company name for matching."""
+    name = name.lower().strip()
+    # Remove common suffixes
+    suffixes = ['pvt ltd', 'private limited', 'ltd', 'limited', 'inc', 'llp', 'llc', 'gmbh', 'bv', 'ag']
+    for suffix in suffixes:
+        name = re.sub(rf'\s*{suffix}\s*$', '', name)
+    # Remove special chars
+    name = re.sub(r'[^a-z0-9\s]', '', name)
+    return name.strip()
+
+def normalize_role(title: str) -> str:
+    """Normalize role title for matching."""
+    title = title.lower().strip()
+    # Common replacements
+    replacements = {
+        'sr.': 'senior',
+        'sr ': 'senior ',
+        'mgr': 'manager',
+        'mktg': 'marketing',
+        'perf': 'performance',
+        'exec': 'executive',
+        'dir': 'director'
+    }
+    for old, new in replacements.items():
+        title = title.replace(old, new)
+    return re.sub(r'[^a-z0-9\s]', '', title).strip()
+
+def create_job_hash(company: str, role: str, location: str) -> str:
+    """Create unique hash for a job posting."""
+    normalized = f"{normalize_company(company)}_{normalize_role(role)}_{location.lower().strip()}"
+    return hashlib.md5(normalized.encode()).hexdigest()[:16]
+
+def check_exact_url_duplicate(url: str) -> bool:
+    """Layer 1: Check if exact URL exists."""
+    from models.database import ScanHistory
+    existing = ScanHistory.query.filter_by(url=url).first()
+    return existing is not None
+
+def check_hash_duplicate(company: str, role: str, location: str) -> tuple:
+    """Layer 2: Check if normalized hash exists."""
+    job_hash = create_job_hash(company, role, location)
+    existing = JobPosting.query.filter_by(job_hash=job_hash).first()
+    return (existing is not None, existing, job_hash)
+
+def check_fuzzy_duplicate(company: str, role: str, threshold: int = 85) -> list:
+    """Layer 3: Check fuzzy matches for same company."""
+    company_norm = normalize_company(company)
+    role_norm = normalize_role(role)
+    
+    # Get all postings for similar company
+    all_postings = JobPosting.query.filter(
+        JobPosting.company_normalized.like(f'%{company_norm[:5]}%')
+    ).all()
+    
+    matches = []
+    for posting in all_postings:
+        company_score = fuzz.ratio(company_norm, posting.company_normalized)
+        role_score = fuzz.ratio(role_norm, posting.role_normalized)
+        
+        if company_score > 80 and role_score > threshold:
+            matches.append({
+                'posting': posting,
+                'company_similarity': company_score,
+                'role_similarity': role_score
+            })
+    
+    return matches
+
+def is_duplicate(url: str, company: str, role: str, location: str) -> dict:
+    """Run all 3 layers of deduplication."""
+    result = {
+        'is_duplicate': False,
+        'duplicate_type': None,
+        'existing_posting': None,
+        'job_hash': None,
+        'fuzzy_matches': []
+    }
+    
+    # Layer 1: Exact URL
+    if check_exact_url_duplicate(url):
+        result['is_duplicate'] = True
+        result['duplicate_type'] = 'exact_url'
+        return result
+    
+    # Layer 2: Hash match
+    is_hash_dup, existing, job_hash = check_hash_duplicate(company, role, location)
+    result['job_hash'] = job_hash
+    
+    if is_hash_dup:
+        result['is_duplicate'] = True
+        result['duplicate_type'] = 'hash_match'
+        result['existing_posting'] = existing
+        # Add this URL to duplicate list
+        existing.times_seen += 1
+        if existing.duplicate_urls:
+            urls = json.loads(existing.duplicate_urls)
+            urls.append(url)
+            existing.duplicate_urls = json.dumps(urls)
+        else:
+            existing.duplicate_urls = json.dumps([url])
+        db.session.commit()
+        return result
+    
+    # Layer 3: Fuzzy match
+    fuzzy_matches = check_fuzzy_duplicate(company, role)
+    if fuzzy_matches:
+        # If >85% similar, treat as duplicate
+        high_matches = [m for m in fuzzy_matches if m['role_similarity'] > 85]
+        if high_matches:
+            result['is_duplicate'] = True
+            result['duplicate_type'] = 'fuzzy_match'
+            result['existing_posting'] = high_matches[0]['posting']
+        else:
+            # Flag for review
+            result['fuzzy_matches'] = fuzzy_matches
+    
+    return result
+
+
+## 2. UPDATE MAIN.PY - ADD /evaluate ENDPOINT
+
+@app.route('/evaluate', methods=['POST'])
+def evaluate():
+    jd_input = request.form.get('jd_input', '').strip()
+    platform = request.form.get('platform', 'manual')
+    
+    if not jd_input:
+        return render_error("Please enter a job description or URL")
+    
+    # Determine if URL or text
+    url = None
+    if jd_input.startswith('http'):
+        url = jd_input
+        # TODO: Parse JD from URL (Day 9)
+        jd_text = jd_input  # For now, treat as text
+    else:
+        jd_text = jd_input
+    
+    # Extract basic info for dedup (Claude will give better data later)
+    # For now, we'll dedup after Claude returns company/role
+    
+    # Call Claude API
+    from services.claude_client import evaluate_job
+    result = evaluate_job(jd_text)
+    
+    if 'error' in result:
+        return render_error(result['error'])
+    
+    # Check for duplicates
+    from services.dedup import is_duplicate
+    dedup_result = is_duplicate(
+        url or f"manual_{datetime.now().timestamp()}",
+        result.get('company', 'Unknown'),
+        result.get('role', 'Unknown'),
+        result.get('location', 'Unknown')
+    )
+    
+    if dedup_result['is_duplicate']:
+        existing = dedup_result['existing_posting']
+        return render_duplicate_warning(result, existing, dedup_result['duplicate_type'])
+    
+    # Save to database
+    from models.database import Application, JobPosting, ScanHistory
+    
+    # Create job posting record
+    job_posting = JobPosting(
+        job_hash=dedup_result['job_hash'],
+        company_normalized=normalize_company(result.get('company', '')),
+        role_normalized=normalize_role(result.get('role', '')),
+        location=result.get('location', ''),
+        first_seen_url=url,
+        first_seen_platform=platform,
+        first_seen_date=datetime.utcnow()
+    )
+    db.session.add(job_posting)
+    db.session.flush()
+    
+    # Create application record
+    application = Application(
+        job_posting_id=job_posting.id,
+        company=result.get('company', 'Unknown'),
+        role=result.get('role', 'Unknown'),
+        location=result.get('location', ''),
+        url=url,
+        platform=platform,
+        score=float(result.get('score', 0)),
+        grade=result.get('grade', 'F'),
+        archetype=result.get('archetype', ''),
+        recommendation=result.get('recommendation', ''),
+        visa_sponsorship=result.get('visa_sponsorship', 'unclear'),
+        evaluation_json=json.dumps(result),
+        jd_text=jd_text,
+        status='Evaluated'
+    )
+    db.session.add(application)
+    
+    # Record scan history
+    if url:
+        scan_record = ScanHistory(
+            url=url,
+            platform=platform,
+            scanned_at=datetime.utcnow(),
+            result='new'
+        )
+        db.session.add(scan_record)
+    
+    db.session.commit()
+    
+    # Return HTML result card
+    return render_evaluation_card(result, application.id)
+
+
+def render_evaluation_card(result: dict, app_id: int) -> str:
+    """Render evaluation result as HTML card."""
+    grade = result.get('grade', 'F')
+    grade_colors = {
+        'A': 'bg-green-900 text-green-300 border-green-500',
+        'B': 'bg-blue-900 text-blue-300 border-blue-500',
+        'C': 'bg-yellow-900 text-yellow-300 border-yellow-500',
+        'D': 'bg-red-900 text-red-300 border-red-500',
+        'F': 'bg-red-950 text-red-400 border-red-600'
+    }
+    
+    visa_badge = ''
+    if result.get('visa_sponsorship') == 'yes':
+        visa_badge = '<span class="px-2 py-1 bg-green-900 text-green-300 rounded text-xs">✓ Visa Sponsored</span>'
+    elif result.get('visa_sponsorship') == 'no':
+        visa_badge = '<span class="px-2 py-1 bg-red-900 text-red-300 rounded text-xs">✗ No Visa</span>'
+    else:
+        visa_badge = '<span class="px-2 py-1 bg-yellow-900 text-yellow-300 rounded text-xs">? Visa Unclear</span>'
+    
+    skip_reason = ''
+    if result.get('skip_reason'):
+        skip_reason = f'<p class="text-red-400 text-sm mt-2">Skip reason: {result["skip_reason"]}</p>'
+    
+    # Build dimensions mini-table
+    dims = result.get('dimensions', {})
+    dim_html = '<div class="grid grid-cols-5 gap-1 mt-3 text-xs">'
+    for dim_name, dim_data in list(dims.items())[:5]:
+        score = dim_data.get('score', 0)
+        color = 'text-green-400' if score >= 4 else 'text-yellow-400' if score >= 3 else 'text-red-400'
+        dim_html += f'<div class="{color}">{dim_name[:6]}: {score}</div>'
+    dim_html += '</div>'
+    
+    return f'''
+    <div class="bg-gray-800 rounded-lg p-4 border-l-4 {grade_colors.get(grade, '')} mt-4">
+        <div class="flex justify-between items-start">
+            <div>
+                <h3 class="text-lg font-semibold text-white">{result.get('company', 'Unknown')}</h3>
+                <p class="text-gray-300">{result.get('role', 'Unknown')}</p>
+                <p class="text-gray-500 text-sm">{result.get('location', '')}</p>
+            </div>
+            <div class="text-right">
+                <div class="text-3xl font-bold text-white">{result.get('score', 0):.2f}</div>
+                <span class="px-3 py-1 rounded text-lg font-bold {grade_colors.get(grade, '')}">
+                    Grade {grade}
+                </span>
+            </div>
+        </div>
+        
+        <div class="flex gap-2 mt-3">
+            <span class="px-2 py-1 bg-purple-900 text-purple-300 rounded text-xs">{result.get('archetype', 'Unknown')}</span>
+            <span class="px-2 py-1 bg-gray-700 text-gray-300 rounded text-xs">{result.get('recommendation', '')}</span>
+            {visa_badge}
+        </div>
+        
+        {dim_html}
+        {skip_reason}
+        
+        <div class="flex gap-2 mt-4">
+            <button hx-post="/generate-cv/{app_id}" hx-target="#cv-result-{app_id}"
+                class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm text-white">
+                Generate CV
+            </button>
+            <button hx-post="/generate-cover/{app_id}" hx-target="#cover-result-{app_id}"
+                class="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded text-sm text-white">
+                Generate Cover Letter
+            </button>
+            <button onclick="toggleDetails({app_id})"
+                class="bg-gray-600 hover:bg-gray-500 px-4 py-2 rounded text-sm text-white">
+                View Details
+            </button>
+        </div>
+        
+        <div id="cv-result-{app_id}" class="mt-2"></div>
+        <div id="cover-result-{app_id}" class="mt-2"></div>
+        <div id="details-{app_id}" class="hidden mt-4 bg-gray-900 p-3 rounded text-xs overflow-auto max-h-96">
+            <pre>{json.dumps(result, indent=2)}</pre>
+        </div>
+    </div>
+    
+    <script>
+    function toggleDetails(id) {{
+        document.getElementById('details-' + id).classList.toggle('hidden');
+    }}
+    </script>
+    '''
+
+
+def render_duplicate_warning(result: dict, existing, dup_type: str) -> str:
+    """Render duplicate warning."""
+    return f'''
+    <div class="bg-yellow-900 border border-yellow-600 rounded-lg p-4 mt-4">
+        <h3 class="text-yellow-300 font-semibold">⚠️ Duplicate Detected</h3>
+        <p class="text-yellow-200 text-sm mt-2">
+            This job ({result.get('company')} - {result.get('role')}) was already evaluated.
+        </p>
+        <p class="text-yellow-400 text-xs mt-1">
+            Duplicate type: {dup_type} | First seen: {existing.first_seen_date if existing else 'Unknown'}
+        </p>
+        <button class="mt-3 bg-yellow-600 hover:bg-yellow-500 px-4 py-2 rounded text-sm text-white">
+            View Existing Evaluation
+        </button>
+    </div>
+    '''
+
+
+def render_error(message: str) -> str:
+    """Render error message."""
+    return f'''
+    <div class="bg-red-900 border border-red-600 rounded-lg p-4 mt-4">
+        <p class="text-red-300">{message}</p>
+    </div>
+    '''
