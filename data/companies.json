@@ -1,0 +1,34 @@
+{
+  "target_companies": [
+    {
+      "name": "Stripe",
+      "careers_url": "https://stripe.com/jobs",
+      "tier": 1,
+      "notes": "Strong data culture, growth-stage"
+    },
+    {
+      "name": "Shopify",
+      "careers_url": "https://www.shopify.com/careers",
+      "tier": 1,
+      "notes": "E-commerce leader"
+    },
+    {
+      "name": "HubSpot",
+      "careers_url": "https://www.hubspot.com/careers",
+      "tier": 1,
+      "notes": "SaaS, great marketing team"
+    },
+    {
+      "name": "Notion",
+      "careers_url": "https://www.notion.so/careers",
+      "tier": 2,
+      "notes": "Growing fast, product-led"
+    },
+    {
+      "name": "Figma",
+      "careers_url": "https://www.figma.com/careers",
+      "tier": 2,
+      "notes": "Design tool, strong brand"
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "job_boards": [
+    {
+      "name": "LinkedIn",
+      "url": "https://www.linkedin.com/jobs/search/?keywords=performance+marketing+manager",
+      "active": true
+    },
+    {
+      "name": "Indeed",
+      "url": "https://www.indeed.com/jobs?q=performance+marketing+manager",
+      "active": true
+    },
+    {
+      "name": "Greenhouse",
+      "url": "https://www.greenhouse.io/job-board",
+      "active": false
+    },
+    {
+      "name": "Lever",
+      "url": "https://jobs.lever.co",
+      "active": false
+    },
+    {
+      "name": "AngelList",
+      "url": "https://wellfound.com/jobs?role=performance-marketing",
+      "active": true
+    }
+  ],
+  "keywords": [
+    "performance marketing manager",
+    "paid media manager",
+    "growth marketing manager",
+    "head of performance marketing",
+    "digital marketing director"
+  ]
+}

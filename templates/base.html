@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Career-Ops{% endblock %} | Career-Ops</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #1f2937; }
+    ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 3px; }
+  </style>
+</head>
+<body class="bg-gray-900 text-white min-h-full">
+  <nav class="border-b border-gray-800 bg-gray-900/80 backdrop-blur-sm sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-3">
+        <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white font-bold text-sm">CO</div>
+        <span class="font-semibold text-lg tracking-tight">Career-Ops</span>
+      </a>
+      <div class="flex items-center gap-4 text-sm text-gray-400">
+        <a href="/" class="hover:text-white transition-colors">Dashboard</a>
+        <span class="text-gray-700">|</span>
+        <span class="text-indigo-400">Performance Marketing</span>
+      </div>
+    </div>
+  </nav>
+
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="mb-4 p-4 rounded-lg border
+            {% if category == 'error' %}bg-red-900/50 border-red-700 text-red-300
+            {% elif category == 'success' %}bg-green-900/50 border-green-700 text-green-300
+            {% else %}bg-yellow-900/50 border-yellow-700 text-yellow-300{% endif %}">
+            {{ message }}
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="border-t border-gray-800 mt-16 py-6 text-center text-sm text-gray-600">
+    Career-Ops &mdash; Job Search Automation for Performance Marketers
+  </footer>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

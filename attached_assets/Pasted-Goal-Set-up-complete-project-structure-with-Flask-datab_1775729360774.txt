@@ -1,0 +1,72 @@
+Goal
+Set up complete project structure with Flask, database config, and base templates.
+Prompt for Replit AI
+Create a Flask web application called "Career-Ops" - a job search automation system for performance marketing roles.
+
+PROJECT STRUCTURE:
+career-ops/
+├── main.py                 # Flask app entry point
+├── config.py               # Configuration & environment
+├── requirements.txt        # Dependencies
+├── .env.example           # Environment template
+├── models/
+│   ├── __init__.py
+│   └── database.py        # SQLAlchemy models
+├── services/
+│   ├── __init__.py
+│   ├── claude_client.py   # Claude API integration
+│   ├── job_parser.py      # URL/JD extraction
+│   └── dedup.py           # Deduplication logic
+├── data/
+│   ├── profile.json       # User profile
+│   ├── job_sources.json   # All job sources
+│   └── companies.json     # Target companies
+├── templates/
+│   ├── base.html          # Base template with Tailwind
+│   ├── index.html         # Dashboard
+│   └── components/        # Reusable components
+├── static/
+│   └── js/
+│       └── app.js
+└── tracker/
+    └── .gitkeep           # For scan history files
+
+REQUIREMENTS.TXT:
+flask==3.0.0
+flask-sqlalchemy==3.1.1
+anthropic==0.39.0
+requests==2.31.0
+beautifulsoup4==4.12.2
+python-dotenv==1.0.0
+gunicorn==21.2.0
+fuzzywuzzy==0.18.0
+python-Levenshtein==0.21.0
+
+CONFIG.PY:
+- Load ANTHROPIC_API_KEY from environment
+- Set MODEL = "claude-sonnet-4-20250514"
+- Set MAX_TOKENS = 4096
+- Database: SQLite career_ops.db
+
+MAIN.PY:
+- Initialize Flask app
+- Setup SQLAlchemy with SQLite
+- Create routes: / (dashboard), /evaluate (POST), /api/health
+- Auto-create database tables on startup
+- Run on port 5000
+
+BASE.HTML:
+- Dark theme (bg-gray-900, text-white)
+- Include Tailwind CSS via CDN
+- Include HTMX via CDN
+- Responsive meta tags
+- Slots for: title, content
+
+INDEX.HTML (extends base):
+- Header: "Career-Ops" logo + "Performance Marketing" subtitle
+- Stats row placeholder (4 cards)
+- Job input section (textarea + evaluate button)
+- Results div for HTMX
+- Applications tracker table placeholder
+
+Make it production-ready with proper error handling and logging.

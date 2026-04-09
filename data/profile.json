@@ -1,0 +1,28 @@
+{
+  "name": "Your Name",
+  "email": "you@example.com",
+  "experience": "5+ years in performance marketing",
+  "skills": [
+    "Google Ads",
+    "Meta Ads",
+    "Programmatic Advertising",
+    "Analytics",
+    "SQL",
+    "Python",
+    "A/B Testing",
+    "Attribution Modeling",
+    "Media Buying",
+    "Campaign Optimization"
+  ],
+  "target_roles": [
+    "Performance Marketing Manager",
+    "Paid Media Manager",
+    "Growth Marketing Manager",
+    "Digital Marketing Director",
+    "Head of Performance Marketing"
+  ],
+  "industries": ["E-commerce", "SaaS", "FinTech", "Consumer Tech"],
+  "preferred_locations": ["Remote", "New York", "San Francisco", "Austin"],
+  "min_salary": 120000,
+  "notes": "Prefer companies with strong data culture and growth-stage opportunities."
+}
