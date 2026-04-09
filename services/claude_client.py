@@ -8,7 +8,7 @@ from google.genai import types
 logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-MODEL = "gemini-2.0-flash"
+MODEL = "gemini-2.5-flash"
 MAX_TOKENS = 4096
 
 EVALUATE_SYSTEM_PROMPT = '''You are Career-Ops, an AI job evaluation system for Aishik Dutta.

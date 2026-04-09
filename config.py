@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-MODEL = "gemini-2.0-flash"
+MODEL = "gemini-2.5-flash"
 MAX_TOKENS = 4096
 DATABASE_URI = "sqlite:///career_ops.db"
 
