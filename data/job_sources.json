@@ -1,36 +1,302 @@
 {
-  "job_boards": [
-    {
-      "name": "LinkedIn",
-      "url": "https://www.linkedin.com/jobs/search/?keywords=performance+marketing+manager",
-      "active": true
-    },
-    {
-      "name": "Indeed",
-      "url": "https://www.indeed.com/jobs?q=performance+marketing+manager",
-      "active": true
-    },
-    {
-      "name": "Greenhouse",
-      "url": "https://www.greenhouse.io/job-board",
-      "active": false
-    },
-    {
-      "name": "Lever",
-      "url": "https://jobs.lever.co",
-      "active": false
-    },
-    {
-      "name": "AngelList",
-      "url": "https://wellfound.com/jobs?role=performance-marketing",
-      "active": true
-    }
+  "job_portals": {
+    "india": [
+      {"name": "LinkedIn", "url": "linkedin.com/jobs", "type": "primary", "search_url": "https://www.linkedin.com/jobs/search/?keywords={query}&location={location}"},
+      {"name": "Naukri", "url": "naukri.com", "type": "primary", "search_url": "https://www.naukri.com/{query}-jobs-in-{location}"},
+      {"name": "Indeed India", "url": "in.indeed.com", "type": "primary"},
+      {"name": "Glassdoor India", "url": "glassdoor.co.in", "type": "primary"},
+      {"name": "Instahyre", "url": "instahyre.com", "type": "startup"},
+      {"name": "Cutshort", "url": "cutshort.io", "type": "startup"},
+      {"name": "Hirist", "url": "hirist.tech", "type": "tech"},
+      {"name": "Updazz", "url": "updazz.com", "type": "general"},
+      {"name": "SimplyHired", "url": "simplyhired.co.in", "type": "aggregator"},
+      {"name": "Shine", "url": "shine.com", "type": "general"},
+      {"name": "Foundit", "url": "foundit.in", "type": "general"},
+      {"name": "iimjobs", "url": "iimjobs.com", "type": "premium"}
+    ],
+    "singapore": [
+      {"name": "LinkedIn", "url": "linkedin.com/jobs", "type": "primary"},
+      {"name": "JobStreet", "url": "jobstreet.com.sg", "type": "primary"},
+      {"name": "MyCareersFuture", "url": "mycareersfuture.gov.sg", "type": "govt", "note": "Shows visa-friendly jobs"},
+      {"name": "Indeed SG", "url": "sg.indeed.com", "type": "primary"},
+      {"name": "Glassdoor SG", "url": "glassdoor.sg", "type": "primary"},
+      {"name": "JobsDB", "url": "sg.jobsdb.com", "type": "primary"},
+      {"name": "NodeFlair", "url": "nodeflair.com", "type": "tech"},
+      {"name": "e27 Jobs", "url": "e27.co/jobs", "type": "startup"}
+    ],
+    "uae": [
+      {"name": "LinkedIn", "url": "linkedin.com/jobs", "type": "primary"},
+      {"name": "Bayt", "url": "bayt.com", "type": "primary"},
+      {"name": "GulfTalent", "url": "gulftalent.com", "type": "primary"},
+      {"name": "Naukrigulf", "url": "naukrigulf.com", "type": "primary", "note": "Good for Indians"},
+      {"name": "Indeed UAE", "url": "ae.indeed.com", "type": "primary"},
+      {"name": "GulfJobs", "url": "gulfjobs.com", "type": "general"},
+      {"name": "Dubizzle", "url": "dubizzle.com/jobs", "type": "local"},
+      {"name": "Glassdoor UAE", "url": "glassdoor.ae", "type": "primary"}
+    ],
+    "germany": [
+      {"name": "LinkedIn", "url": "linkedin.com/jobs", "type": "primary"},
+      {"name": "StepStone", "url": "stepstone.de", "type": "primary"},
+      {"name": "Indeed DE", "url": "de.indeed.com", "type": "primary"},
+      {"name": "XING", "url": "xing.com/jobs", "type": "primary"},
+      {"name": "Glassdoor DE", "url": "glassdoor.de", "type": "primary"},
+      {"name": "Arbeitnow", "url": "arbeitnow.com", "type": "english", "note": "English-friendly jobs"},
+      {"name": "Berlin Startup Jobs", "url": "berlinstartupjobs.com", "type": "startup"}
+    ],
+    "netherlands": [
+      {"name": "LinkedIn", "url": "linkedin.com/jobs", "type": "primary"},
+      {"name": "Indeed NL", "url": "nl.indeed.com", "type": "primary"},
+      {"name": "Glassdoor NL", "url": "glassdoor.nl", "type": "primary"},
+      {"name": "Together Abroad", "url": "togetherabroad.nl", "type": "expat", "note": "For internationals"}
+    ],
+    "sweden": [
+      {"name": "LinkedIn", "url": "linkedin.com/jobs", "type": "primary"},
+      {"name": "Indeed SE", "url": "se.indeed.com", "type": "primary"},
+      {"name": "TheHub", "url": "thehub.io", "type": "startup"},
+      {"name": "Glassdoor SE", "url": "glassdoor.se", "type": "primary"}
+    ],
+    "portugal": [
+      {"name": "LinkedIn", "url": "linkedin.com/jobs", "type": "primary"},
+      {"name": "Indeed PT", "url": "pt.indeed.com", "type": "primary"},
+      {"name": "Landing.jobs", "url": "landing.jobs", "type": "tech", "note": "Tech focus, visa-friendly"},
+      {"name": "Glassdoor PT", "url": "glassdoor.pt", "type": "primary"}
+    ],
+    "denmark": [
+      {"name": "LinkedIn", "url": "linkedin.com/jobs", "type": "primary"},
+      {"name": "Jobindex", "url": "jobindex.dk", "type": "primary"},
+      {"name": "Indeed DK", "url": "dk.indeed.com", "type": "primary"},
+      {"name": "TheHub", "url": "thehub.io", "type": "startup"}
+    ]
+  },
+
+  "agency_networks": {
+    "global": [
+      {"name": "WPP", "agencies": ["GroupM", "Mindshare", "MediaCom", "Wavemaker", "EssenceMediacom"], "careers": "wpp.com/careers", "tier": 1},
+      {"name": "Publicis", "agencies": ["Performics", "Starcom", "Zenith", "Digitas", "Leo Burnett"], "careers": "publicisgroupe.com/careers", "tier": 1},
+      {"name": "Dentsu", "agencies": ["iProspect", "Dentsu X", "Merkle", "Carat"], "careers": "dentsu.com/careers", "tier": 1},
+      {"name": "Omnicom", "agencies": ["OMD", "PHD", "Hearts & Science"], "careers": "omnicomgroup.com/careers", "tier": 1},
+      {"name": "IPG", "agencies": ["UM", "Initiative", "Mediabrands"], "careers": "interpublic.com/careers", "tier": 1},
+      {"name": "Havas", "agencies": ["Havas Media", "Havas Creative"], "careers": "havasgroup.com/careers", "tier": 1}
+    ]
+  },
+
+  "boutique_agencies": {
+    "india": [
+      {"name": "Sokrati", "careers": "sokrati.com/careers", "tier": 2, "focus": "performance"},
+      {"name": "AdYogi", "careers": "adyogi.com/careers", "tier": 2, "focus": "ecom"},
+      {"name": "Social Beat", "careers": "socialbeat.in/careers", "tier": 2},
+      {"name": "Tonic Worldwide", "careers": "tonicworldwide.com/careers", "tier": 2},
+      {"name": "WATConsult", "careers": "watconsult.com/careers", "tier": 2},
+      {"name": "Interactive Avenues", "careers": "interactiveavenues.com", "tier": 2},
+      {"name": "Gozoop", "careers": "gozoop.com/careers", "tier": 2},
+      {"name": "Foxymoron", "careers": "foxymoron.in", "tier": 2}
+    ],
+    "international": [
+      {"name": "Brainlabs", "careers": "brainlabs.com/careers", "tier": 1, "hq": "UK"},
+      {"name": "Jellyfish", "careers": "jellyfish.com/careers", "tier": 1, "hq": "UK"},
+      {"name": "Croud", "careers": "croud.com/careers", "tier": 2, "hq": "UK"},
+      {"name": "DEPT", "careers": "deptagency.com/careers", "tier": 1, "hq": "Amsterdam"},
+      {"name": "MediaMonks", "careers": "mediamonks.com/careers", "tier": 1, "hq": "Amsterdam"}
+    ]
+  },
+
+  "tech_platforms": [
+    {"name": "Google", "careers": "careers.google.com", "roles": ["Performance Solutions", "Agency Team", "GMS"]},
+    {"name": "Meta", "careers": "metacareers.com", "roles": ["Client Solutions", "Marketing Science"]},
+    {"name": "Amazon", "careers": "amazon.jobs", "roles": ["Advertising", "Marketplace"]},
+    {"name": "TikTok", "careers": "careers.tiktok.com", "roles": ["Client Solutions", "SMB"]},
+    {"name": "LinkedIn", "careers": "careers.linkedin.com", "roles": ["Marketing Solutions"]},
+    {"name": "Snap", "careers": "careers.snap.com", "roles": ["Ad Solutions"]},
+    {"name": "Pinterest", "careers": "pinterestcareers.com", "roles": ["Performance Ads"]},
+    {"name": "Spotify", "careers": "lifeatspotify.com", "roles": ["Ad Studio"]},
+    {"name": "Criteo", "careers": "careers.criteo.com", "roles": ["Adtech"]},
+    {"name": "The Trade Desk", "careers": "thetradedesk.com/careers", "roles": ["Programmatic"]},
+    {"name": "Taboola", "careers": "taboola.com/careers", "roles": ["Native Ads"]},
+    {"name": "Outbrain", "careers": "outbrain.com/careers", "roles": ["Native Ads"]}
   ],
-  "keywords": [
-    "performance marketing manager",
-    "paid media manager",
-    "growth marketing manager",
-    "head of performance marketing",
-    "digital marketing director"
+
+  "d2c_brands": {
+    "india": [
+      {"name": "Mamaearth", "careers": "honasa.in/careers", "category": "beauty", "funding": "Series E"},
+      {"name": "Nykaa", "careers": "nykaa.com/careers", "category": "beauty", "funding": "Public"},
+      {"name": "Sugar Cosmetics", "careers": "sugarcosmetics.com/careers", "category": "beauty"},
+      {"name": "boAt", "careers": "boat-lifestyle.com/careers", "category": "electronics"},
+      {"name": "Lenskart", "careers": "lenskart.com/careers", "category": "eyewear"},
+      {"name": "Bewakoof", "careers": "bewakoof.com/careers", "category": "fashion"},
+      {"name": "The Souled Store", "careers": "thesouledstore.com", "category": "fashion"},
+      {"name": "mCaffeine", "careers": "mcaffeine.com", "category": "beauty"},
+      {"name": "Plum", "careers": "plumgoodness.com", "category": "beauty"},
+      {"name": "WOW Skin Science", "careers": "buywow.in", "category": "beauty"},
+      {"name": "Bombay Shaving Co", "careers": "bombayshavingcompany.com", "category": "grooming"},
+      {"name": "Minimalist", "careers": "beminimalist.co", "category": "beauty"},
+      {"name": "Country Delight", "careers": "countrydelight.in", "category": "dairy"},
+      {"name": "Sleepy Owl", "careers": "sleepyowl.co", "category": "coffee"},
+      {"name": "Snitch", "careers": "snitch.co.in", "category": "fashion"}
+    ],
+    "international": [
+      {"name": "Gymshark", "careers": "careers.gymshark.com", "hq": "UK"},
+      {"name": "ASOS", "careers": "asos.com/careers", "hq": "UK"},
+      {"name": "HelloFresh", "careers": "hellofresh.com/careers", "hq": "Germany"},
+      {"name": "About You", "careers": "corporate.aboutyou.de/careers", "hq": "Germany"},
+      {"name": "NA-KD", "careers": "na-kd.com/careers", "hq": "Sweden"}
+    ]
+  },
+
+  "ecommerce": {
+    "india": [
+      {"name": "Amazon India", "careers": "amazon.jobs/en/locations/india"},
+      {"name": "Flipkart", "careers": "flipkartcareers.com"},
+      {"name": "Myntra", "careers": "myntra.com/careers"},
+      {"name": "Ajio", "careers": "careers.ril.com"},
+      {"name": "Meesho", "careers": "meesho.com/careers"},
+      {"name": "Tata Cliq", "careers": "tatacliq.com/careers"}
+    ],
+    "singapore": [
+      {"name": "Shopee", "careers": "careers.shopee.sg", "hq": true},
+      {"name": "Lazada", "careers": "lazada.com/careers", "hq": true},
+      {"name": "Zalora", "careers": "zalora.com/careers"}
+    ],
+    "uae": [
+      {"name": "Noon", "careers": "careers.noon.com", "hq": true},
+      {"name": "Amazon.ae", "careers": "amazon.jobs/en/locations/uae"},
+      {"name": "Namshi", "careers": "namshi.com/careers"}
+    ],
+    "europe": [
+      {"name": "Zalando", "careers": "jobs.zalando.com", "hq": "Berlin"},
+      {"name": "bol.com", "careers": "careers.bol.com", "hq": "Netherlands"},
+      {"name": "Booking.com", "careers": "careers.booking.com", "hq": "Amsterdam"}
+    ]
+  },
+
+  "quick_commerce": {
+    "india": [
+      {"name": "Zepto", "careers": "zeptonow.com/careers"},
+      {"name": "Blinkit", "careers": "blinkit.com/careers"},
+      {"name": "Swiggy Instamart", "careers": "careers.swiggy.com"},
+      {"name": "BigBasket", "careers": "bigbasket.com/careers"},
+      {"name": "Dunzo", "careers": "dunzo.com/careers"}
+    ],
+    "uae": [
+      {"name": "Talabat", "careers": "talabat.com/careers"},
+      {"name": "Deliveroo", "careers": "careers.deliveroo.com"},
+      {"name": "Careem", "careers": "careem.com/careers"}
+    ],
+    "europe": [
+      {"name": "Getir", "careers": "getir.com/careers"},
+      {"name": "Flink", "careers": "goflink.com/careers"},
+      {"name": "Gorillas", "careers": "gorillas.io/careers"},
+      {"name": "Wolt", "careers": "careers.wolt.com"}
+    ]
+  },
+
+  "fmcg_cpg": [
+    {"name": "Hindustan Unilever", "careers": "careers.unilever.com"},
+    {"name": "P&G", "careers": "pgcareers.com"},
+    {"name": "Nestlé", "careers": "nestle.com/jobs"},
+    {"name": "ITC", "careers": "itcportal.com/careers"},
+    {"name": "Godrej", "careers": "godrejcareers.com"},
+    {"name": "Coca-Cola", "careers": "coca-colacompany.com/careers"},
+    {"name": "PepsiCo", "careers": "pepsicojobs.com"},
+    {"name": "Mondelez", "careers": "mondelezinternational.com/careers"},
+    {"name": "L'Oréal", "careers": "careers.loreal.com"},
+    {"name": "Colgate", "careers": "jobs.colgate.com"},
+    {"name": "Reckitt", "careers": "reckitt.com/careers"},
+    {"name": "Dabur", "careers": "dabur.com/careers"},
+    {"name": "Marico", "careers": "marico.com/careers"}
+  ],
+
+  "consulting": [
+    {"name": "Accenture Song", "careers": "accenture.com/careers", "division": "digital"},
+    {"name": "Deloitte Digital", "careers": "deloitte.com/careers", "division": "digital"},
+    {"name": "PwC Digital", "careers": "pwc.com/careers", "division": "digital"},
+    {"name": "KPMG Digital", "careers": "kpmg.com/careers", "division": "digital"},
+    {"name": "EY", "careers": "ey.com/careers", "division": "consulting"},
+    {"name": "McKinsey", "careers": "mckinsey.com/careers", "division": "leap"},
+    {"name": "BCG X", "careers": "bcg.com/careers", "division": "digital"},
+    {"name": "Capgemini", "careers": "capgemini.com/careers", "division": "digital"}
+  ],
+
+  "b2b_saas": [
+    {"name": "Salesforce", "careers": "salesforce.com/careers"},
+    {"name": "HubSpot", "careers": "hubspot.com/careers"},
+    {"name": "Zoho", "careers": "zoho.com/careers"},
+    {"name": "Freshworks", "careers": "freshworks.com/careers"},
+    {"name": "Adobe", "careers": "adobe.com/careers"},
+    {"name": "Shopify", "careers": "shopify.com/careers"},
+    {"name": "Klaviyo", "careers": "klaviyo.com/careers"},
+    {"name": "CleverTap", "careers": "clevertap.com/careers"},
+    {"name": "MoEngage", "careers": "moengage.com/careers"},
+    {"name": "WebEngage", "careers": "webengage.com/careers"},
+    {"name": "Appsflyer", "careers": "appsflyer.com/careers"},
+    {"name": "Branch", "careers": "branch.io/careers"},
+    {"name": "Sprinklr", "careers": "sprinklr.com/careers"}
+  ],
+
+  "fintech": {
+    "india": [
+      {"name": "Razorpay", "careers": "razorpay.com/jobs"},
+      {"name": "Paytm", "careers": "paytm.com/careers"},
+      {"name": "PhonePe", "careers": "phonepe.com/careers"},
+      {"name": "CRED", "careers": "cred.club/careers"},
+      {"name": "Groww", "careers": "groww.in/careers"},
+      {"name": "Jupiter", "careers": "jupiter.money/careers"},
+      {"name": "Slice", "careers": "sliceit.com/careers"}
+    ],
+    "international": [
+      {"name": "Revolut", "careers": "revolut.com/careers", "hq": "UK"},
+      {"name": "N26", "careers": "n26.com/careers", "hq": "Germany"},
+      {"name": "Klarna", "careers": "klarna.com/careers", "hq": "Sweden"},
+      {"name": "Wise", "careers": "wise.jobs", "hq": "UK"},
+      {"name": "Grab Financial", "careers": "grab.careers", "hq": "Singapore"}
+    ]
+  },
+
+  "uae_conglomerates": [
+    {"name": "Al-Futtaim", "careers": "alfuttaim.com/careers", "sectors": ["Auto", "Retail", "Real Estate"]},
+    {"name": "Majid Al Futtaim", "careers": "majidalfuttaim.com/careers", "sectors": ["Malls", "Retail", "Hospitality"]},
+    {"name": "Chalhoub Group", "careers": "chalhoubgroup.com/careers", "sectors": ["Luxury Retail"]},
+    {"name": "Landmark Group", "careers": "landmarkgroup.com/careers", "sectors": ["Retail"]},
+    {"name": "Apparel Group", "careers": "apparelgroup.com/careers", "sectors": ["Fashion Retail"]},
+    {"name": "Al Tayer", "careers": "altayer.com/careers", "sectors": ["Luxury", "Auto"]},
+    {"name": "Emaar", "careers": "careers.emaar.com", "sectors": ["Real Estate"]}
+  ],
+
+  "edtech": [
+    {"name": "Byju's", "careers": "byjus.com/careers"},
+    {"name": "Unacademy", "careers": "unacademy.com/careers"},
+    {"name": "upGrad", "careers": "upgrad.com/careers"},
+    {"name": "Scaler", "careers": "scaler.com/careers"},
+    {"name": "Simplilearn", "careers": "simplilearn.com/careers"}
+  ],
+
+  "travel_hospitality": [
+    {"name": "MakeMyTrip", "careers": "makemytrip.com/careers"},
+    {"name": "Booking.com", "careers": "careers.booking.com"},
+    {"name": "Airbnb", "careers": "careers.airbnb.com"},
+    {"name": "OYO", "careers": "oyorooms.com/careers"},
+    {"name": "Agoda", "careers": "careersatagoda.com"},
+    {"name": "Klook", "careers": "klook.com/careers"}
+  ],
+
+  "vc_portfolio_jobs": [
+    {"name": "YCombinator", "url": "ycombinator.com/jobs"},
+    {"name": "Sequoia", "url": "sequoiacap.com/companies"},
+    {"name": "Accel", "url": "accel.com/jobs"},
+    {"name": "Peak XV", "url": "peakxv.com/companies"},
+    {"name": "Matrix Partners", "url": "matrixpartners.in/companies"},
+    {"name": "Elevation Capital", "url": "elevationcapital.com/companies"}
+  ],
+
+  "reddit_communities": [
+    {"name": "r/india", "focus": "India jobs"},
+    {"name": "r/mumbai", "focus": "Mumbai local"},
+    {"name": "r/pune", "focus": "Pune local"},
+    {"name": "r/singapore", "focus": "Singapore jobs"},
+    {"name": "r/dubai", "focus": "Dubai/UAE"},
+    {"name": "r/germany", "focus": "Germany jobs"},
+    {"name": "r/iwantout", "focus": "Relocation/visa"},
+    {"name": "r/marketing", "focus": "Marketing jobs"},
+    {"name": "r/PPC", "focus": "Performance marketing"},
+    {"name": "r/digital_marketing", "focus": "Digital marketing"}
   ]
 }

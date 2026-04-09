@@ -189,6 +189,15 @@ def create_app():
             db.session.rollback()
             return jsonify({"success": False, "error": "Failed to save job."}), 500
 
+    @app.route("/api/sources")
+    def api_sources():
+        from services.sources import get_sources_for_scanning, count_sources
+        region = request.args.get("region", "india")
+        category = request.args.get("category")
+        sources = get_sources_for_scanning(region, category)
+        counts = count_sources()
+        return jsonify({"sources": sources, "counts": counts, "returned": len(sources)})
+
     @app.route("/api/profile")
     def api_profile():
         profile = load_profile()
