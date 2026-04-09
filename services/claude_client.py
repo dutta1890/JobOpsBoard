@@ -2,12 +2,13 @@ import json
 import logging
 import os
 
-import anthropic
+from google import genai
+from google.genai import types
 
 logger = logging.getLogger(__name__)
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-MODEL = "claude-sonnet-4-20250514"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+MODEL = "gemini-2.0-flash"
 MAX_TOKENS = 4096
 
 EVALUATE_SYSTEM_PROMPT = '''You are Career-Ops, an AI job evaluation system for Aishik Dutta.
@@ -163,12 +164,12 @@ REQUIRED_FIELDS = {
 }
 
 
-def _get_client() -> anthropic.Anthropic:
-    if not ANTHROPIC_API_KEY:
+def _get_client() -> genai.Client:
+    if not GEMINI_API_KEY:
         raise ValueError(
-            "ANTHROPIC_API_KEY is not set. Add it as an environment secret to enable AI evaluation."
+            "GEMINI_API_KEY is not set. Add it as an environment secret to enable AI evaluation."
         )
-    return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    return genai.Client(api_key=GEMINI_API_KEY)
 
 
 def parse_claude_response(response_text: str) -> dict:
@@ -191,14 +192,14 @@ def parse_claude_response(response_text: str) -> dict:
     start = text.find("{")
     end = text.rfind("}") + 1
     if start == -1 or end == 0:
-        raise ValueError("No JSON object found in Claude response")
+        raise ValueError("No JSON object found in response")
 
     text = text[start:end]
     parsed = json.loads(text)
 
     missing = REQUIRED_FIELDS - set(parsed.keys())
     if missing:
-        logger.warning(f"Claude response missing fields: {missing}")
+        logger.warning(f"Response missing fields: {missing}")
 
     return parsed
 
@@ -223,20 +224,19 @@ def evaluate_job(jd_text: str) -> dict:
         return {"success": False, "error": str(e)}
 
     try:
-        message = client.messages.create(
+        response = client.models.generate_content(
             model=MODEL,
-            max_tokens=MAX_TOKENS,
-            system=EVALUATE_SYSTEM_PROMPT,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"Evaluate this job description for Aishik Dutta:\n\n{jd_text}",
-                }
-            ],
+            contents=f"Evaluate this job description for Aishik Dutta:\n\n{jd_text}",
+            config=types.GenerateContentConfig(
+                system_instruction=EVALUATE_SYSTEM_PROMPT,
+                max_output_tokens=MAX_TOKENS,
+                temperature=0.2,
+                response_mime_type="application/json",
+            ),
         )
 
-        raw_text = message.content[0].text
-        logger.debug(f"Claude raw response (first 200 chars): {raw_text[:200]}")
+        raw_text = response.text
+        logger.debug(f"Gemini raw response (first 200 chars): {raw_text[:200]}")
 
         parsed = parse_claude_response(raw_text)
 
@@ -244,39 +244,30 @@ def evaluate_job(jd_text: str) -> dict:
             recalculated = calculate_final_score(parsed["dimensions"])
             if abs(recalculated - float(parsed.get("score", 0))) > 0.1:
                 logger.info(
-                    f"Score recalculated: Claude={parsed.get('score')} → Ours={recalculated}"
+                    f"Score recalculated: Model={parsed.get('score')} → Ours={recalculated}"
                 )
                 parsed["score"] = recalculated
 
         return {"success": True, "data": parsed}
 
-    except anthropic.APITimeoutError:
-        logger.error("Claude API timed out")
-        return {
-            "success": False,
-            "error": "Request timed out. Please try again in a moment.",
-        }
-    except anthropic.AuthenticationError:
-        logger.error("Claude API authentication failed")
-        return {
-            "success": False,
-            "error": "Invalid API key. Check your ANTHROPIC_API_KEY secret.",
-        }
-    except anthropic.RateLimitError:
-        logger.error("Claude API rate limit hit")
-        return {
-            "success": False,
-            "error": "Rate limit reached. Please wait a moment and try again.",
-        }
-    except anthropic.APIError as e:
-        logger.error(f"Claude API error: {e}")
-        return {"success": False, "error": f"API error: {str(e)}"}
-    except (json.JSONDecodeError, ValueError) as e:
-        logger.error(f"Failed to parse Claude response: {e}")
-        return {
-            "success": False,
-            "error": "Could not parse evaluation response. Please try again.",
-        }
     except Exception as e:
+        err_str = str(e).lower()
+
+        if "deadline" in err_str or "timeout" in err_str:
+            logger.error(f"Gemini API timed out: {e}")
+            return {"success": False, "error": "Request timed out. Please try again."}
+
+        if "permission" in err_str or "api_key" in err_str or "unauthenticated" in err_str or "invalid" in err_str and "key" in err_str:
+            logger.error(f"Gemini auth error: {e}")
+            return {"success": False, "error": "Invalid API key. Check your GEMINI_API_KEY secret."}
+
+        if "quota" in err_str or "resource_exhausted" in err_str or "rate" in err_str:
+            logger.error(f"Gemini rate limit: {e}")
+            return {"success": False, "error": "Rate limit reached. Please wait and try again."}
+
+        if isinstance(e, (json.JSONDecodeError, ValueError)):
+            logger.error(f"Failed to parse Gemini response: {e}")
+            return {"success": False, "error": "Could not parse evaluation response. Please try again."}
+
         logger.exception("Unexpected error during job evaluation")
-        return {"success": False, "error": "Internal error during evaluation."}
+        return {"success": False, "error": f"Evaluation error: {str(e)}"}

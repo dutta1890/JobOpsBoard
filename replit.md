@@ -6,7 +6,7 @@ A job search automation system for performance marketing roles built with Flask.
 
 - **Framework**: Flask 3.0 + Flask-SQLAlchemy
 - **Database**: SQLite (`career_ops.db`)
-- **AI Integration**: Anthropic Claude (`claude-sonnet-4-20250514`)
+- **AI Integration**: Google Gemini (`gemini-2.0-flash`) via `google-genai` SDK
 - **Frontend**: Jinja2 templates, Tailwind CSS (CDN), HTMX (CDN)
 - **Port**: 5000
 - **Profile**: Aishik Dutta — 8 years performance marketing, Mumbai-based, open to relocation
@@ -56,7 +56,7 @@ Helper functions in `models/database.py`: `create_job_hash()`, `check_duplicate(
 
 ## Environment Variables
 
-Set `ANTHROPIC_API_KEY` to enable AI evaluations. See `.env.example`.
+Set `GEMINI_API_KEY` to enable AI evaluations. Get one free at https://aistudio.google.com/apikey. See `.env.example`.
 
 ## Running
 
