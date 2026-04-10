@@ -7,3 +7,4 @@ python-dotenv==1.0.0
 gunicorn==21.2.0
 fuzzywuzzy==0.18.0
 python-Levenshtein==0.21.0
+playwright==1.40.0
