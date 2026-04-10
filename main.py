@@ -179,14 +179,28 @@ def create_app():
             body = request.get_json(silent=True) or {}
             jd_text = (body.get("jd_text") or "").strip()
             platform = (body.get("platform") or "manual").strip()
+            # Optional metadata for pre-filtering (posted_date, title, experience_required)
+            job_metadata = body.get("job_metadata") or None
 
             if not jd_text:
                 return jsonify({"success": False, "error": "No job description provided."}), 400
 
             from services.job_parser import parse_job_input
-            from services.claude_client import evaluate_job
+            from services.gemini_client import evaluate_job, pre_filter_job
             from services.dedup import is_duplicate as check_dup
             from models.database import _normalize
+
+            # ── Pre-filter gate (age + seniority) before any API call ─────────
+            if job_metadata:
+                pf = pre_filter_job(job_metadata)
+                if not pf["proceed"]:
+                    logger.info(f"[pre-filter] Blocked before API: {pf['skip_reason']}")
+                    return jsonify({
+                        "success": False,
+                        "filtered": True,
+                        "filter_type": pf["filter_type"],
+                        "error": pf["skip_reason"],
+                    }), 200
 
             parsed = parse_job_input(jd_text)
             if not parsed["success"]:
@@ -409,6 +423,44 @@ def create_app():
             logger.exception("Unhandled error in /api/save-job")
             db.session.rollback()
             return jsonify({"success": False, "error": "Failed to save job."}), 500
+
+    @app.route("/api/generate-cv", methods=["POST"])
+    def generate_cv_route():
+        try:
+            body = request.get_json(silent=True) or {}
+            jd_text = (body.get("jd_text") or "").strip()
+            evaluation = body.get("evaluation") or {}
+            app_id = body.get("app_id")
+
+            if not jd_text:
+                return jsonify({"success": False, "error": "No job description provided."}), 400
+
+            from services.gemini_client import generate_cv
+
+            # If app_id provided, fetch evaluation from DB
+            if app_id and not evaluation:
+                app_record = Application.query.get(app_id)
+                if app_record:
+                    evaluation = app_record.get_evaluation()
+                    jd_text = jd_text or (app_record.jd_text or "")
+
+            result = generate_cv(jd_text, evaluation)
+
+            if "error" in result:
+                return jsonify({"success": False, "error": result["error"]}), 500
+
+            # Persist generated CV to the application record if app_id given
+            if app_id:
+                app_record = Application.query.get(app_id)
+                if app_record:
+                    app_record.cv_generated = True
+                    db.session.commit()
+
+            return jsonify({"success": True, "cv": result})
+
+        except Exception as e:
+            logger.exception("Unhandled error in /api/generate-cv")
+            return jsonify({"success": False, "error": "CV generation failed."}), 500
 
     @app.route("/api/sources")
     def api_sources():

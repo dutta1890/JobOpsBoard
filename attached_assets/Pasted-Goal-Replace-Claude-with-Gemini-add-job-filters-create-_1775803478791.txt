@@ -1,0 +1,386 @@
+Goal
+Replace Claude with Gemini, add job filters, create CV generator.
+Prompt for Replit AI
+Update Career-Ops to use Gemini API and add job filters.
+
+## TASK 1: Create services/gemini_client.py
+
+Create a new file services/gemini_client.py with this code:
+
+import google.generativeai as genai
+import json
+import re
+import os
+import time
+from datetime import datetime
+from functools import wraps
+
+# ═══════════════════════════════════════════════════════════════
+# CONFIGURATION
+# ═══════════════════════════════════════════════════════════════
+
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-1.5-flash')
+
+# Rate limiting (Gemini free tier: 60/min)
+LAST_REQUEST = 0
+MIN_INTERVAL = 1.0
+
+def rate_limited(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        global LAST_REQUEST
+        elapsed = time.time() - LAST_REQUEST
+        if elapsed < MIN_INTERVAL:
+            time.sleep(MIN_INTERVAL - elapsed)
+        result = func(*args, **kwargs)
+        LAST_REQUEST = time.time()
+        return result
+    return wrapper
+
+
+# ═══════════════════════════════════════════════════════════════
+# JOB FILTERS (Run BEFORE AI evaluation)
+# ═══════════════════════════════════════════════════════════════
+
+# Filter configuration
+JOB_AGE_SKIP_DAYS = 7
+JOB_AGE_PRIORITY_DAYS = 3
+
+SKIP_TITLES = [
+    'intern', 'internship', 'trainee', 'fresher',
+    'analyst', 'executive', 'associate', 'junior',
+    'entry level', 'entry-level', 'graduate'
+]
+
+SKIP_EXPERIENCE = [
+    '0-1', '1-2', '2-3', '0-2', '1-3', '0-3',
+    'fresher', 'entry level'
+]
+
+
+def check_job_age(posted_date_str):
+    """
+    Check if job should be skipped based on age.
+    Returns: {skip: bool, reason: str, priority: str, days_old: int}
+    """
+    if not posted_date_str:
+        return {'skip': False, 'priority': 'medium', 'days_old': None}
+    
+    text = posted_date_str.lower()
+    days_old = None
+    
+    # Parse different formats
+    if 'just now' in text or 'today' in text:
+        days_old = 0
+    elif 'yesterday' in text:
+        days_old = 1
+    elif match := re.search(r'(\d+)\s*hour', text):
+        days_old = 0
+    elif match := re.search(r'(\d+)\s*day', text):
+        days_old = int(match.group(1))
+    elif match := re.search(r'(\d+)\s*week', text):
+        days_old = int(match.group(1)) * 7
+    elif match := re.search(r'(\d+)\s*month', text):
+        days_old = int(match.group(1)) * 30
+    
+    if days_old is None:
+        return {'skip': False, 'priority': 'medium', 'days_old': None}
+    
+    # Apply rules
+    if days_old >= JOB_AGE_SKIP_DAYS:
+        return {
+            'skip': True,
+            'reason': f'Job is {days_old} days old (limit: {JOB_AGE_SKIP_DAYS})',
+            'priority': 'skip',
+            'days_old': days_old
+        }
+    
+    priority = 'high' if days_old <= JOB_AGE_PRIORITY_DAYS else 'medium'
+    return {'skip': False, 'priority': priority, 'days_old': days_old}
+
+
+def check_seniority(title, experience_text='', description=''):
+    """
+    Check if job is too junior.
+    Returns: {skip: bool, reason: str}
+    """
+    combined = f"{title} {experience_text} {description}".lower()
+    
+    # Check title
+    title_lower = title.lower() if title else ''
+    for skip_word in SKIP_TITLES:
+        if skip_word in title_lower:
+            return {'skip': True, 'reason': f'Title contains "{skip_word}"'}
+    
+    # Check experience patterns
+    for pattern in SKIP_EXPERIENCE:
+        if pattern in combined:
+            return {'skip': True, 'reason': f'Junior experience: {pattern}'}
+    
+    # Check numeric patterns
+    junior_patterns = [
+        r'0\s*[-–]\s*[12]\s*years?',
+        r'1\s*[-–]\s*[23]\s*years?',
+        r'2\s*[-–]\s*3\s*years?',
+    ]
+    for pattern in junior_patterns:
+        if re.search(pattern, combined):
+            return {'skip': True, 'reason': 'Junior experience requirement'}
+    
+    return {'skip': False}
+
+
+def pre_filter_job(job_data):
+    """
+    Run all filters before AI evaluation.
+    Returns: {proceed: bool, skip_reason: str, priority: str, days_old: int}
+    """
+    # Filter 1: Job age
+    age_check = check_job_age(job_data.get('posted_date', ''))
+    if age_check['skip']:
+        return {
+            'proceed': False,
+            'skip_reason': age_check['reason'],
+            'priority': 'skip',
+            'filter_type': 'job_age'
+        }
+    
+    # Filter 2: Seniority
+    seniority_check = check_seniority(
+        job_data.get('title', ''),
+        job_data.get('experience_required', ''),
+        job_data.get('description', '')
+    )
+    if seniority_check['skip']:
+        return {
+            'proceed': False,
+            'skip_reason': seniority_check['reason'],
+            'priority': 'skip',
+            'filter_type': 'seniority'
+        }
+    
+    return {
+        'proceed': True,
+        'skip_reason': None,
+        'priority': age_check['priority'],
+        'days_old': age_check.get('days_old')
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# EVALUATION PROMPT (Your profile is here)
+# ═══════════════════════════════════════════════════════════════
+
+EVALUATE_PROMPT = '''You are a job evaluation AI for Aishik Dutta.
+
+## CANDIDATE PROFILE
+- Name: Aishik Dutta
+- Experience: 8+ years in Performance Marketing
+- Current: Performance Marketer @ Alo Creative LLP
+- Location: Mumbai, India
+- Notice Period: 2 months
+- Budget Managed: ₹50 Lakhs - 1 Cr/month
+- Team Led: 1-2 people
+
+## SKILLS
+- Proficient: Google Ads, Meta Ads, YouTube Ads, LinkedIn Ads, TikTok Ads
+- Basic: Amazon Ads, SEO, Email Marketing
+- Certifications: Google Ads, Google Analytics, HubSpot
+
+## TARGET ROLES (Senior/Lead level only)
+- Senior Performance Marketing Manager
+- Performance Marketing Lead
+- Media Lead / Media Manager
+- Digital Marketing Manager
+
+## SALARY TARGETS
+| Location | Salary |
+|----------|--------|
+| Mumbai, Pune | ₹15-25 LPA |
+| Singapore | SGD 60-80K (need visa sponsorship) |
+| Dubai, Abu Dhabi | AED 25-30K/month (need visa) |
+| Germany, Netherlands, Sweden | €60-70K (need visa) |
+
+## KEY ACHIEVEMENTS
+1. HealthHub: 24M impressions, 178K clicks, 200-300 leads
+2. Gulf Pharmacy: 1.38x ROAS (100K AED on 72K spend)
+3. Géant: 5M impressions, 21M video views
+4. Camelicious: $600K engagement, 5-6K/month Amazon sales
+5. HCG Oncology: 5% conversion, 60+ leads/month
+
+## SCORING (1-5 each)
+| Dimension | Weight |
+|-----------|--------|
+| role_match | 2.0x (GATE: <3 = fail) |
+| channel_fit | 2.0x (GATE: <3 = fail) |
+| budget_scale | 1.5x |
+| compensation | 1.5x |
+| location | 1.0x |
+| company_fit | 1.0x |
+| growth_path | 1.0x |
+| interview_likelihood | 1.5x |
+
+## GRADES
+A: ≥4.5 | B: 4.0-4.4 | C: 3.5-3.9 | D: 3.0-3.4 | F: <3.0
+
+## VISA CHECK (for international jobs)
+- If "visa sponsorship", "relocation support" found → visa_sponsorship: "yes"
+- If "local candidates only", "must be authorized" → visa_sponsorship: "no" → auto-skip
+- If nothing mentioned → visa_sponsorship: "unclear"
+
+## OUTPUT JSON ONLY:
+{
+  "company": "",
+  "role": "",
+  "location": "",
+  "salary_listed": "",
+  "visa_sponsorship": "yes|no|unclear",
+  "score": 0.00,
+  "grade": "A|B|C|D|F",
+  "recommendation": "Apply|Consider|Skip",
+  "skip_reason": null,
+  "dimensions": {},
+  "key_matches": [],
+  "gaps": [],
+  "cover_letter_hook": ""
+}'''
+
+
+@rate_limited
+def evaluate_job(jd_text, job_metadata=None):
+    """Evaluate a job using Gemini API."""
+    
+    # Run pre-filters first
+    if job_metadata:
+        pre_filter = pre_filter_job(job_metadata)
+        if not pre_filter['proceed']:
+            return {
+                'skip': True,
+                'skip_reason': pre_filter['skip_reason'],
+                'filter_type': pre_filter['filter_type'],
+                'score': 0,
+                'grade': 'F',
+                'recommendation': 'Skip'
+            }
+    
+    prompt = f"""{EVALUATE_PROMPT}
+
+## JOB DESCRIPTION:
+{jd_text}
+
+Output valid JSON only."""
+    
+    try:
+        response = model.generate_content(prompt)
+        result = parse_response(response.text)
+        
+        # Add priority from filters
+        if job_metadata:
+            pre_filter = pre_filter_job(job_metadata)
+            result['priority'] = pre_filter.get('priority', 'medium')
+            result['days_old'] = pre_filter.get('days_old')
+        
+        return result
+    except Exception as e:
+        return {'error': str(e)}
+
+
+def parse_response(text):
+    """Parse JSON from Gemini response."""
+    text = text.strip()
+    if text.startswith('```json'):
+        text = text[7:]
+    if text.startswith('```'):
+        text = text[3:]
+    if text.endswith('```'):
+        text = text[:-3]
+    
+    try:
+        return json.loads(text.strip())
+    except:
+        return {'error': 'JSON parse failed', 'raw': text[:500]}
+
+
+# ═══════════════════════════════════════════════════════════════
+# CV GENERATION
+# ═══════════════════════════════════════════════════════════════
+
+CV_PROMPT = '''Generate tailored CV content for Aishik Dutta.
+
+## AISHIK'S DATA
+- 8+ years performance marketing
+- Budget: ₹50L-1Cr/month
+- Channels: Google, Meta, YouTube, LinkedIn, TikTok
+- Certs: Google Ads, GA, HubSpot
+
+## ACHIEVEMENTS
+1. HealthHub: 24M impressions, 178K clicks, 200-300 leads
+2. Gulf Pharmacy: 1.38x ROAS
+3. Géant: 5M impressions, 21M video views
+4. Camelicious: $600K engagement
+
+## RULES
+- Reorder bullets by relevance to JD
+- Inject JD keywords naturally
+- NEVER fabricate
+- Quantify everything
+
+## OUTPUT JSON:
+{
+  "summary": "3-4 line tailored summary",
+  "keywords_injected": [],
+  "experience_bullets": ["Most relevant first", "..."],
+  "skills_to_highlight": []
+}'''
+
+
+@rate_limited
+def generate_cv(jd_text, evaluation):
+    """Generate tailored CV."""
+    prompt = f"""{CV_PROMPT}
+
+## JOB DESCRIPTION:
+{jd_text[:2500]}
+
+## DETECTED ARCHETYPE:
+{evaluation.get('archetype', 'performance_marketing')}
+
+Output valid JSON only."""
+    
+    try:
+        response = model.generate_content(prompt)
+        return parse_response(response.text)
+    except Exception as e:
+        return {'error': str(e)}
+
+
+## TASK 2: Update main.py
+
+In main.py, update the /evaluate route to use Gemini and filters:
+
+# At the top, change imports:
+# OLD: from services.claude_client import evaluate_job
+# NEW:
+from services.gemini_client import evaluate_job, pre_filter_job
+
+# Update the evaluate route to show filtered jobs differently
+# (The existing route logic should work, just update the import)
+
+
+## TASK 3: Test the filters
+
+Create a test in the Shell:
+
+python -c "
+from services.gemini_client import check_job_age, check_seniority
+
+# Test job age
+print(check_job_age('Posted 2 days ago'))  # Should pass, high priority
+print(check_job_age('Posted 10 days ago'))  # Should skip
+
+# Test seniority
+print(check_seniority('Marketing Intern'))  # Should skip
+print(check_seniority('Senior Performance Marketing Manager'))  # Should pass
+"
