@@ -320,6 +320,89 @@ Output valid JSON only."""
         return {"error": str(e)}
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# COVER LETTER GENERATION
+# ═════════════════════════════════════════════════════════════════════════════
+
+_COVER_LETTER_SYSTEM_PROMPT = """Write a tailored cover letter for Aishik Dutta.
+
+## AISHIK'S STRENGTHS
+- 8+ years performance marketing, ₹50L–1Cr monthly budgets
+- HealthHub: 24M impressions, 178K clicks, 200–300 leads/month
+- Gulf Pharmacy: 1.38x ROAS (100K AED revenue on 72K spend)
+- Géant: 5M impressions, 21M video views, 70% reach
+- Camelicious: $600K engagement, 5–6K/month Amazon sales
+- HCG Oncology: 5% conversion, 60+ leads/month via SKAG
+- International experience: UAE, KSA, Kuwait, Australia, NZ
+
+## STRUCTURE
+1. Hook: Connect one specific achievement to their most urgent need (1 sentence, no "I am writing to apply")
+2. Body P1: Most relevant achievement with exact metrics
+3. Body P2: Why THIS company + secondary proof point
+4. Close: Available in 2 months, clear call to action
+
+## RULES
+- 250–300 words total
+- Professional but warm tone
+- Quantify everything possible
+- Name the company explicitly
+- No generic phrases ("I am writing to apply", "passionate about marketing")
+
+## OUTPUT FORMAT (JSON only, no markdown)
+{
+  "full_text": "Complete cover letter text ready to copy-paste",
+  "hook": "Just the opening sentence",
+  "word_count": 275
+}"""
+
+
+@rate_limited
+def generate_cover_letter(jd_text: str, evaluation: dict | None = None) -> dict:
+    """Generate a tailored cover letter for a specific JD.
+
+    Args:
+        jd_text: Job description text (truncated to 2500 chars).
+        evaluation: Optional dict with company/role from evaluate_job result.
+
+    Returns:
+        dict with full_text, hook, word_count — or error key.
+    """
+    if evaluation and isinstance(evaluation, dict):
+        data = evaluation.get("data", evaluation)
+        company = data.get("company", "the company")
+        role = data.get("role", "the role")
+        archetype = data.get("archetype", "")
+        context = f"Company: {company}\nRole: {role}" + (f"\nArchetype: {archetype}" if archetype else "")
+    else:
+        context = ""
+
+    user_content = f"""Write a cover letter for Aishik Dutta.
+
+{f'## TARGET ROLE{chr(10)}{context}' if context else ''}
+
+## JOB DESCRIPTION
+{jd_text[:2500]}
+
+Output valid JSON only."""
+
+    try:
+        client = _get_client()
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=user_content,
+            config=types.GenerateContentConfig(
+                system_instruction=_COVER_LETTER_SYSTEM_PROMPT,
+                max_output_tokens=2048,
+                temperature=0.4,
+                response_mime_type="application/json",
+            ),
+        )
+        return _parse_json(response.text)
+    except Exception as e:
+        logger.error(f"Cover letter generation error: {e}")
+        return {"error": str(e)}
+
+
 def _parse_json(text: str) -> dict:
     """Strip markdown fences and parse JSON."""
     text = text.strip()

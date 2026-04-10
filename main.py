@@ -462,6 +462,134 @@ def create_app():
             logger.exception("Unhandled error in /api/generate-cv")
             return jsonify({"success": False, "error": "CV generation failed."}), 500
 
+    @app.route("/api/generate-cover", methods=["POST"])
+    def generate_cover_route():
+        try:
+            body = request.get_json(silent=True) or {}
+            jd_text = (body.get("jd_text") or "").strip()
+            evaluation = body.get("evaluation") or {}
+            app_id = body.get("app_id")
+
+            if not jd_text and not app_id:
+                return jsonify({"success": False, "error": "No job description or app_id provided."}), 400
+
+            from services.gemini_client import generate_cover_letter
+
+            if app_id:
+                app_record = Application.query.get(app_id)
+                if not app_record:
+                    return jsonify({"success": False, "error": "Application not found."}), 404
+                jd_text = jd_text or (app_record.jd_text or "")
+                evaluation = evaluation or app_record.get_evaluation()
+
+            result = generate_cover_letter(jd_text, evaluation)
+
+            if "error" in result:
+                return jsonify({"success": False, "error": result["error"]}), 500
+
+            if app_id:
+                app_record = Application.query.get(app_id)
+                if app_record:
+                    app_record.cover_generated = True
+                    db.session.commit()
+
+            return jsonify({"success": True, "cover": result})
+
+        except Exception as e:
+            logger.exception("Unhandled error in /api/generate-cover")
+            return jsonify({"success": False, "error": "Cover letter generation failed."}), 500
+
+    @app.route("/generate-cover/<int:app_id>", methods=["POST"])
+    def gen_cover_html(app_id):
+        """HTMX-compatible endpoint — returns an HTML fragment."""
+        from services.gemini_client import generate_cover_letter
+
+        application = Application.query.get(app_id)
+        if not application:
+            return '<div class="text-red-400 text-sm p-2">Application not found.</div>'
+
+        evaluation = application.get_evaluation()
+        cover = generate_cover_letter(application.jd_text or "", evaluation)
+
+        if "error" in cover:
+            return f'<div class="text-red-400 text-sm p-2">Error: {cover["error"]}</div>'
+
+        application.cover_generated = True
+        db.session.commit()
+
+        full_text = cover.get("full_text", "")
+        safe_text = full_text.replace("`", "'").replace("\\", "\\\\")
+
+        return f'''<div class="bg-purple-900/40 border border-purple-700 rounded-lg p-4 mt-2">
+  <div class="flex items-center justify-between mb-2">
+    <h4 class="text-purple-300 text-sm font-semibold">✓ Cover Letter ({cover.get("word_count", "~")} words)</h4>
+    <button onclick="navigator.clipboard.writeText(`{safe_text}`)"
+      class="bg-purple-700 hover:bg-purple-600 px-3 py-1 rounded text-xs text-white">Copy</button>
+  </div>
+  <div class="text-xs text-gray-300 whitespace-pre-wrap leading-relaxed max-h-52 overflow-y-auto">{full_text}</div>
+</div>'''
+
+    @app.route("/api/apply-email", methods=["POST"])
+    def apply_email():
+        try:
+            body = request.get_json(silent=True) or {}
+            app_id = body.get("app_id")
+            to_email = (body.get("to_email") or "").strip()
+            cover_text = (body.get("cover_letter_text") or "").strip()
+
+            if not app_id:
+                return jsonify({"success": False, "error": "app_id required."}), 400
+
+            app_record = Application.query.get(app_id)
+            if not app_record:
+                return jsonify({"success": False, "error": "Application not found."}), 404
+
+            from services.email_applicator import email_applicator
+
+            # Auto-extract email from JD if not provided
+            if not to_email and app_record.jd_text:
+                to_email = email_applicator.extract_email_from_jd(app_record.jd_text) or ""
+
+            if not to_email:
+                return jsonify({
+                    "success": False,
+                    "error": "No recruiter email found. Please provide one manually.",
+                }), 400
+
+            # Use stored cover letter text or generate a simple fallback
+            if not cover_text:
+                evaluation = app_record.get_evaluation()
+                cover_text = evaluation.get("cover_letter_hook", "")
+                if not cover_text:
+                    return jsonify({
+                        "success": False,
+                        "error": "No cover letter text. Please generate a cover letter first.",
+                    }), 400
+
+            result = email_applicator.apply(
+                to_email=to_email,
+                company=app_record.company,
+                role=app_record.role,
+                cover_letter_text=cover_text,
+            )
+
+            if result["success"]:
+                app_record.status = "Applied"
+                app_record.applied_date = datetime.utcnow()
+                db.session.commit()
+
+            return jsonify(result)
+
+        except Exception as e:
+            logger.exception("Unhandled error in /api/apply-email")
+            return jsonify({"success": False, "error": "Email send failed."}), 500
+
+    @app.route("/api/email-test", methods=["GET"])
+    def email_test():
+        from services.email_applicator import email_applicator
+        result = email_applicator.test_connection()
+        return jsonify(result)
+
     @app.route("/api/sources")
     def api_sources():
         from services.sources import get_sources_for_scanning, count_sources
