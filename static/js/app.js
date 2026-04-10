@@ -23,6 +23,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
         if (response.ok && payload.success) {
           renderResult(payload);
+          // Auto-refresh the tracker table after a short delay
+          setTimeout(() => window.location.reload(), 600);
+        } else if (response.ok && payload.duplicate) {
+          showAlert(
+            `⚠️ Duplicate detected (${payload.duplicate_type?.replace(/_/g, " ")}): ${payload.error}`,
+            "warning"
+          );
         } else {
           showAlert(payload.error || "Evaluation failed. Please try again.", "error");
         }
@@ -234,12 +241,22 @@ document.addEventListener("DOMContentLoaded", () => {
       </div>
 
       <!-- Actions -->
-      <div class="flex gap-3 pb-2">
-        <button
-          onclick='saveJob(${JSON.stringify(JSON.stringify(payload))})'
-          class="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors">
-          Save to Tracker
-        </button>
+      <div class="flex items-center gap-3 pb-2">
+        ${payload.saved
+          ? `<span class="flex items-center gap-2 px-4 py-2 bg-green-900/60 border border-green-700 text-green-300 text-sm font-medium rounded-lg">
+               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+               Saved to tracker
+             </span>`
+          : payload.duplicate
+          ? `<span class="flex items-center gap-2 px-4 py-2 bg-yellow-900/60 border border-yellow-700 text-yellow-300 text-sm font-medium rounded-lg">
+               ⚠️ ${esc(payload.duplicate_message || "Duplicate — not saved")}
+             </span>`
+          : `<button
+               onclick='saveJob(${JSON.stringify(JSON.stringify(payload))})'
+               class="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors">
+               Save to Tracker
+             </button>`
+        }
         <button
           onclick="document.getElementById('jd-input').value=''; document.getElementById('results').innerHTML='';"
           class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-lg transition-colors">

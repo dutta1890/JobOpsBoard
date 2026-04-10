@@ -54,6 +54,89 @@ def _score_to_grade(score: float | None) -> str | None:
     return "F"
 
 
+def render_evaluation_card(result: dict, app_id: int) -> str:
+    """Render an evaluation result as an HTML card fragment (for HTMX / server-side use)."""
+    grade = result.get("grade", "F")
+    grade_css = {
+        "A": "border-green-500 bg-green-950/40",
+        "B": "border-blue-500 bg-blue-950/40",
+        "C": "border-yellow-500 bg-yellow-950/40",
+        "D": "border-orange-500 bg-orange-950/40",
+        "F": "border-red-600 bg-red-950/40",
+    }.get(grade, "border-gray-600 bg-gray-900")
+
+    visa = result.get("visa_sponsorship", "unclear")
+    visa_badge = {
+        "yes":    '<span class="px-2 py-0.5 bg-green-900 text-green-300 rounded text-xs">✓ Visa Sponsored</span>',
+        "no":     '<span class="px-2 py-0.5 bg-red-900 text-red-300 rounded text-xs">✗ No Visa</span>',
+        "unclear":'<span class="px-2 py-0.5 bg-yellow-900 text-yellow-300 rounded text-xs">? Visa Unclear</span>',
+    }.get(visa, "")
+
+    dims = result.get("dimensions", {})
+    dim_html = '<div class="grid grid-cols-5 gap-2 mt-3 text-xs">'
+    for key, label in [
+        ("role_match", "Role"), ("channel_fit", "Channel"),
+        ("budget_scale", "Budget"), ("compensation", "Comp"),
+        ("interview_likelihood", "Interview"),
+    ]:
+        s = dims.get(key, {}).get("score", "—")
+        color = "text-green-400" if isinstance(s, (int, float)) and s >= 4 \
+            else "text-yellow-400" if isinstance(s, (int, float)) and s >= 3 \
+            else "text-red-400"
+        dim_html += f'<div class="{color} text-center"><div class="font-semibold">{s}</div><div class="text-gray-500">{label}</div></div>'
+    dim_html += "</div>"
+
+    skip = f'<p class="text-red-400 text-xs mt-2">Skip reason: {result["skip_reason"]}</p>' \
+        if result.get("skip_reason") else ""
+
+    return f"""
+    <div class="rounded-xl border-l-4 {grade_css} p-5 mt-4">
+      <div class="flex justify-between items-start">
+        <div>
+          <h3 class="text-lg font-semibold text-white">{result.get('company','Unknown')}</h3>
+          <p class="text-gray-300 text-sm">{result.get('role','')}</p>
+          <p class="text-gray-500 text-xs">{result.get('location','')}</p>
+        </div>
+        <div class="text-right shrink-0 ml-4">
+          <div class="text-4xl font-bold text-white">{result.get('score',0):.2f}</div>
+          <div class="text-xl font-bold mt-0.5 {'text-green-400' if grade=='A' else 'text-blue-400' if grade=='B' else 'text-yellow-400' if grade=='C' else 'text-red-400'}">Grade {grade}</div>
+        </div>
+      </div>
+      <div class="flex flex-wrap gap-2 mt-3">
+        <span class="px-2 py-0.5 bg-purple-900 text-purple-300 rounded text-xs">{result.get('archetype','').replace('_',' ')}</span>
+        <span class="px-2 py-0.5 bg-gray-700 text-gray-300 rounded text-xs">{result.get('recommendation','')}</span>
+        {visa_badge}
+      </div>
+      {dim_html}
+      {skip}
+      <p class="text-xs text-green-400 mt-3">✓ Saved to tracker (id={app_id})</p>
+    </div>"""
+
+
+def render_duplicate_warning(result: dict, existing, dup_type: str) -> str:
+    """Render a duplicate-detected warning as an HTML fragment."""
+    first_seen = getattr(existing, "first_seen_date", None)
+    first_seen_str = first_seen.strftime("%b %d, %Y") if first_seen else "Unknown"
+    return f"""
+    <div class="rounded-lg border border-yellow-600 bg-yellow-950/40 p-4 mt-4">
+      <h3 class="text-yellow-300 font-semibold">⚠️ Duplicate Detected</h3>
+      <p class="text-yellow-200 text-sm mt-1">
+        {result.get('company','?')} — {result.get('role','?')} has already been evaluated.
+      </p>
+      <p class="text-yellow-500 text-xs mt-1">
+        Type: {dup_type.replace('_',' ')} · First seen: {first_seen_str}
+      </p>
+    </div>"""
+
+
+def render_error(message: str) -> str:
+    """Render an error message as an HTML fragment."""
+    return f"""
+    <div class="rounded-lg border border-red-600 bg-red-950/40 p-4 mt-4">
+      <p class="text-red-300 text-sm">{message}</p>
+    </div>"""
+
+
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
@@ -95,32 +178,133 @@ def create_app():
         try:
             body = request.get_json(silent=True) or {}
             jd_text = (body.get("jd_text") or "").strip()
+            platform = (body.get("platform") or "manual").strip()
 
             if not jd_text:
                 return jsonify({"success": False, "error": "No job description provided."}), 400
 
             from services.job_parser import parse_job_input
             from services.claude_client import evaluate_job
+            from services.dedup import is_duplicate as check_dup
+            from models.database import _normalize
 
             parsed = parse_job_input(jd_text)
             if not parsed["success"]:
                 return jsonify({"success": False, "error": parsed.get("error", "Failed to parse input.")}), 400
 
             text = parsed["text"]
+            url = parsed.get("url")
+
+            # ── Layer 1 pre-flight: skip Gemini entirely if URL already seen ──
+            if url:
+                from models.database import ScanHistory as _SH
+                if _SH.query.filter_by(url=url).first():
+                    return jsonify({
+                        "success": False,
+                        "duplicate": True,
+                        "duplicate_type": "exact_url",
+                        "error": "This URL has already been evaluated and saved.",
+                    }), 200
+
             result = evaluate_job(text)
 
             if not result["success"]:
                 return jsonify({"success": False, "error": result.get("error", "Evaluation failed.")}), 500
 
             data = result["data"]
+            company = data.get("company", "Unknown")
+            role = data.get("role", "Unknown")
+            location = data.get("location", "")
+
+            # ── Layers 2 & 3: dedup check then auto-save ──────────────────────
+            dedup = check_dup(url or "", company, role, location)
+
+            if dedup["is_duplicate"]:
+                existing = dedup["existing_posting"]
+                dup_type = dedup["duplicate_type"]
+                times_seen = getattr(existing, "times_seen", "?") if existing else "?"
+                dup_messages = {
+                    "exact_url":   "This exact URL has already been saved.",
+                    "hash_match":  f"This job was already evaluated (seen {times_seen}×).",
+                    "fuzzy_match": "A very similar job already exists in your tracker.",
+                }
+                existing_app_id = (
+                    existing.applications[0].id
+                    if existing and existing.applications
+                    else None
+                )
+                return jsonify({
+                    "success": True,
+                    "data": data,
+                    "saved": False,
+                    "duplicate": True,
+                    "duplicate_type": dup_type,
+                    "duplicate_message": dup_messages.get(dup_type, "Duplicate detected."),
+                    "existing_id": existing_app_id,
+                    "meta": {
+                        "company": company, "role": role,
+                        "location": location, "url": url,
+                    },
+                    "jd_text": text,
+                })
+
+            # Auto-save: new job — create records
+            posting = JobPosting(
+                job_hash=dedup["job_hash"],
+                company_normalized=_normalize(company),
+                role_normalized=_normalize(role),
+                location=location,
+                first_seen_url=url,
+                first_seen_platform=platform,
+                first_seen_date=datetime.utcnow(),
+                duplicate_urls="[]",
+                times_seen=1,
+            )
+            db.session.add(posting)
+            db.session.flush()
+
+            score_raw = data.get("score")
+            score = float(score_raw) if score_raw is not None else None
+            grade = data.get("grade") or _score_to_grade(score)
+
+            application = Application(
+                job_posting_id=posting.id,
+                company=company,
+                role=role,
+                location=location,
+                url=url,
+                platform=platform,
+                score=score,
+                grade=grade,
+                archetype=data.get("archetype"),
+                recommendation=data.get("recommendation"),
+                visa_sponsorship=data.get("visa_sponsorship", "unclear"),
+                evaluation_json=json.dumps(data),
+                jd_text=text,
+                status="Evaluated",
+            )
+            db.session.add(application)
+
+            if url:
+                if not ScanHistory.query.filter_by(url=url).first():
+                    db.session.add(ScanHistory(
+                        url=url,
+                        platform=platform,
+                        scanned_at=datetime.utcnow(),
+                        result="new",
+                    ))
+
+            db.session.commit()
+
             return jsonify({
                 "success": True,
                 "data": data,
+                "saved": True,
+                "duplicate": False,
+                "app_id": application.id,
                 "meta": {
-                    "company": data.get("company", ""),
-                    "role": data.get("role", ""),
-                    "location": data.get("location", ""),
-                    "url": parsed.get("url"),
+                    "company": company, "role": role,
+                    "location": location, "url": url,
                     "title": parsed.get("title", ""),
                 },
                 "jd_text": text,
@@ -128,6 +312,7 @@ def create_app():
 
         except Exception as e:
             logger.exception("Unhandled error in /evaluate")
+            db.session.rollback()
             return jsonify({"success": False, "error": "Internal server error."}), 500
 
     @app.route("/api/save-job", methods=["POST"])
