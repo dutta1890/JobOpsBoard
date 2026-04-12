@@ -237,6 +237,7 @@ def create_app():
         )
 
     @app.route("/evaluate", methods=["POST"])
+    @login_required
     def evaluate():
         try:
             body = request.get_json(silent=True) or {}
@@ -393,6 +394,7 @@ def create_app():
             return jsonify({"success": False, "error": "Internal server error."}), 500
 
     @app.route("/api/save-job", methods=["POST"])
+    @login_required
     def save_job():
         try:
             body = request.get_json(silent=True) or {}
@@ -488,6 +490,7 @@ def create_app():
             return jsonify({"success": False, "error": "Failed to save job."}), 500
 
     @app.route("/api/generate-cv", methods=["POST"])
+    @login_required
     def generate_cv_route():
         try:
             body = request.get_json(silent=True) or {}
@@ -574,6 +577,7 @@ def create_app():
         return send_from_directory(pdf_dir, filename, as_attachment=True)
 
     @app.route("/api/generate-cover", methods=["POST"])
+    @login_required
     def generate_cover_route():
         try:
             body = request.get_json(silent=True) or {}
@@ -611,6 +615,7 @@ def create_app():
             return jsonify({"success": False, "error": "Cover letter generation failed."}), 500
 
     @app.route("/generate-cover/<int:app_id>", methods=["POST"])
+    @login_required
     def gen_cover_html(app_id):
         """HTMX-compatible endpoint — returns an HTML fragment."""
         from services.gemini_client import generate_cover_letter
@@ -641,6 +646,7 @@ def create_app():
 </div>'''
 
     @app.route("/api/apply-email", methods=["POST"])
+    @login_required
     def apply_email():
         try:
             body = request.get_json(silent=True) or {}
@@ -696,29 +702,34 @@ def create_app():
             return jsonify({"success": False, "error": "Email send failed."}), 500
 
     @app.route("/api/email-test", methods=["GET"])
+    @login_required
     def email_test():
         from services.email_applicator import email_applicator
         result = email_applicator.test_connection()
         return jsonify(result)
 
     @app.route("/agent/start", methods=["POST"])
+    @login_required
     def start_agent():
         from services.agent import agent
         agent.start()
         return jsonify({"status": "started"})
 
     @app.route("/agent/stop", methods=["POST"])
+    @login_required
     def stop_agent():
         from services.agent import agent
         agent.stop()
         return jsonify({"status": "stopped"})
 
     @app.route("/agent/status", methods=["GET"])
+    @login_required
     def agent_status():
         from services.agent import agent
         return jsonify(agent.get_status())
 
     @app.route("/agent/queue/<int:app_id>", methods=["POST"])
+    @login_required
     def queue_job(app_id):
         from services.agent import agent
 
@@ -740,6 +751,7 @@ def create_app():
         return jsonify({"status": "queued", "task_id": task_id})
 
     @app.route("/agent/queue-grade-a", methods=["POST"])
+    @login_required
     def queue_all_grade_a():
         from services.agent import agent
 
@@ -763,12 +775,14 @@ def create_app():
         return jsonify({"queued": queued, "skipped_linkedin": skipped})
 
     @app.route("/agent/resume/<int:task_id>", methods=["POST"])
+    @login_required
     def resume_agent_task(task_id):
         from services.agent import agent
         success = agent.resume_task(task_id)
         return jsonify({"resumed": success})
 
     @app.route("/agent/queue-grade-b", methods=["POST"])
+    @login_required
     def queue_all_grade_b():
         from services.agent import agent
 
@@ -792,6 +806,7 @@ def create_app():
         return jsonify({"queued": queued, "skipped_linkedin": skipped})
 
     @app.route("/check-emails", methods=["POST"])
+    @login_required
     def check_emails():
         from services.email_tracker import email_tracker
 
@@ -826,12 +841,14 @@ def create_app():
         return html
 
     @app.route("/api/email-summary", methods=["GET"])
+    @login_required
     def api_email_summary():
         from services.email_tracker import email_tracker
         summary = email_tracker.get_summary()
         return jsonify(summary)
 
     @app.route("/api/form-apply", methods=["POST"])
+    @login_required
     def api_form_apply():
         try:
             body = request.get_json(silent=True) or {}
@@ -863,6 +880,7 @@ def create_app():
             return jsonify({"success": False, "error": "Form application failed."}), 500
 
     @app.route("/api/sources")
+    @login_required
     def api_sources():
         from services.sources import get_sources_for_scanning, count_sources
         region = request.args.get("region", "india")
@@ -872,6 +890,7 @@ def create_app():
         return jsonify({"sources": sources, "counts": counts, "returned": len(sources)})
 
     @app.route("/api/profile")
+    @login_required
     def api_profile():
         profile = load_profile()
         if not profile:
