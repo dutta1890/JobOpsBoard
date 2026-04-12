@@ -1,0 +1,260 @@
+Goal
+Add ATS-optimized PDF generation and final testing.
+Prompt for Replit AI
+Add PDF CV generation to Career-Ops.
+
+## TASK 1: Create services/pdf_generator.py
+
+"""
+PDF Generator - Creates ATS-optimized CV PDFs
+"""
+
+import os
+from playwright.sync_api import sync_playwright
+from pathlib import Path
+from datetime import datetime
+
+class PDFGenerator:
+    """Generates ATS-optimized PDF CVs."""
+    
+    def __init__(self):
+        self.output_dir = Path('output/pdfs')
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.template_path = Path('templates/cv_template.html')
+    
+    def generate_cv(self, cv_data: dict, company: str, role: str) -> str:
+        """
+        Generate tailored CV PDF.
+        Returns path to generated PDF.
+        """
+        # Build HTML
+        html = self._build_html(cv_data)
+        
+        # Generate filename
+        timestamp = datetime.now().strftime('%Y%m%d')
+        company_slug = company.lower().replace(' ', '-')[:20]
+        filename = f"Aishik_Dutta_CV_{company_slug}_{timestamp}.pdf"
+        output_path = self.output_dir / filename
+        
+        # Convert to PDF
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.set_content(html)
+            page.pdf(path=str(output_path), format='A4', print_background=True)
+            browser.close()
+        
+        return str(output_path)
+    
+    def _build_html(self, cv_data: dict) -> str:
+        """Build HTML from CV data."""
+        return f'''
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        
+        body {{
+            font-family: 'Inter', -apple-system, sans-serif;
+            font-size: 11pt;
+            line-height: 1.5;
+            color: #1a1a1a;
+            padding: 40px;
+        }}
+        
+        .header {{
+            text-align: center;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #2563eb;
+            padding-bottom: 15px;
+        }}
+        
+        .name {{
+            font-size: 24pt;
+            font-weight: 700;
+            color: #1e3a5f;
+        }}
+        
+        .contact {{
+            font-size: 10pt;
+            color: #4b5563;
+            margin-top: 8px;
+        }}
+        
+        .section {{
+            margin-bottom: 16px;
+        }}
+        
+        .section-title {{
+            font-size: 12pt;
+            font-weight: 600;
+            color: #2563eb;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-bottom: 1px solid #e5e7eb;
+            padding-bottom: 4px;
+            margin-bottom: 10px;
+        }}
+        
+        .summary {{
+            font-size: 10.5pt;
+            color: #374151;
+        }}
+        
+        .job {{
+            margin-bottom: 12px;
+        }}
+        
+        .job-header {{
+            display: flex;
+            justify-content: space-between;
+        }}
+        
+        .job-title {{
+            font-weight: 600;
+        }}
+        
+        .job-company {{
+            color: #4b5563;
+        }}
+        
+        .job-date {{
+            color: #6b7280;
+            font-size: 10pt;
+        }}
+        
+        ul {{
+            padding-left: 18px;
+            margin-top: 6px;
+        }}
+        
+        li {{
+            margin-bottom: 3px;
+            font-size: 10.5pt;
+        }}
+        
+        .skills {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }}
+        
+        .skill {{
+            background: #eff6ff;
+            color: #1e40af;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 9pt;
+        }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="name">Aishik Dutta</div>
+        <div class="contact">
+            +91-8741-03-4164 | dutta1890@gmail.com | 
+            linkedin.com/in/aishikduttaoct18 | Mumbai, India
+        </div>
+    </div>
+    
+    <div class="section">
+        <div class="section-title">Professional Summary</div>
+        <div class="summary">{cv_data.get('summary', '')}</div>
+    </div>
+    
+    <div class="section">
+        <div class="section-title">Experience</div>
+        {''.join(self._render_job(job) for job in cv_data.get('experience', []))}
+    </div>
+    
+    <div class="section">
+        <div class="section-title">Skills</div>
+        <div class="skills">
+            {''.join(f'<span class="skill">{s}</span>' for s in cv_data.get('skills', []))}
+        </div>
+    </div>
+    
+    <div class="section">
+        <div class="section-title">Education & Certifications</div>
+        <p>{cv_data.get('education', '')}</p>
+        <p>{', '.join(cv_data.get('certifications', []))}</p>
+    </div>
+</body>
+</html>
+'''
+    
+    def _render_job(self, job: dict) -> str:
+        """Render single job entry."""
+        bullets = ''.join(f'<li>{b}</li>' for b in job.get('bullets', []))
+        return f'''
+        <div class="job">
+            <div class="job-header">
+                <div>
+                    <span class="job-title">{job.get('title', '')}</span>
+                    <span class="job-company"> | {job.get('company', '')}</span>
+                </div>
+                <span class="job-date">{job.get('dates', '')}</span>
+            </div>
+            <ul>{bullets}</ul>
+        </div>
+        '''
+
+
+pdf_generator = PDFGenerator()
+
+
+## TASK 2: Add PDF generation route
+
+@app.route('/generate-pdf/<int:app_id>', methods=['POST'])
+@login_required
+def generate_pdf(app_id):
+    from services.pdf_generator import pdf_generator
+    from services.gemini_client import generate_cv
+    from models.database import Application
+    
+    app = Application.query.get(app_id)
+    if not app:
+        return '<div class="text-red-400">Not found</div>'
+    
+    evaluation = json.loads(app.evaluation_json) if app.evaluation_json else {}
+    
+    # Generate tailored CV content
+    cv_content = generate_cv(app.jd_text, evaluation)
+    
+    if 'error' in cv_content:
+        return f'<div class="text-red-400">{cv_content["error"]}</div>'
+    
+    # Generate PDF
+    pdf_path = pdf_generator.generate_cv(cv_content, app.company, app.role)
+    
+    return f'''
+    <div class="bg-green-900 border border-green-700 rounded p-3 mt-2">
+        <div class="text-green-300">✓ PDF Generated</div>
+        <a href="/download/{os.path.basename(pdf_path)}" 
+           class="text-blue-400 underline text-sm">
+            Download CV
+        </a>
+    </div>
+    '''
+
+
+## TASK 3: Final security checklist
+
+Run through this checklist before deploying:
+
+[ ] DASHBOARD_PASSWORD is set and strong (12+ chars, mixed case, numbers, symbols)
+[ ] FLASK_SECRET_KEY is randomly generated (64+ chars)
+[ ] EMAIL_APP_PASSWORD is app-specific (not your main password)
+[ ] GEMINI_API_KEY is not exposed in any logs
+[ ] All routes use @login_required
+[ ] Rate limiting is active
+[ ] HTTPS is enforced (Replit does this automatically)
+[ ] Input sanitization is working
+[ ] Audit logging is capturing all actions
+[ ] Backups are running daily
+[ ] Legitimacy checker is blocking suspicious URLs
+[ ] Scam detector is flagging red flags

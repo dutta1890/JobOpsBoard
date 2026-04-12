@@ -525,6 +525,54 @@ def create_app():
             logger.exception("Unhandled error in /api/generate-cv")
             return jsonify({"success": False, "error": "CV generation failed."}), 500
 
+    @app.route("/generate-pdf/<int:app_id>", methods=["POST"])
+    @login_required
+    def generate_pdf(app_id):
+        """Generate a tailored PDF CV for a specific application and serve a download link."""
+        try:
+            from services.pdf_generator import pdf_generator
+            from services.gemini_client import generate_cv as gemini_generate_cv
+
+            app_record = Application.query.get(app_id)
+            if not app_record:
+                return '<div class="text-red-400">Application not found.</div>', 404
+
+            jd_text = app_record.jd_text or ""
+            evaluation = app_record.get_evaluation()
+
+            cv_content = gemini_generate_cv(jd_text, evaluation)
+            if "error" in cv_content:
+                return f'<div class="text-red-400">CV generation failed: {cv_content["error"]}</div>', 500
+
+            pdf_path = pdf_generator.generate_cv(
+                cv_content,
+                company=app_record.company,
+                role=app_record.role,
+            )
+            filename = os.path.basename(pdf_path)
+            return f'''<div class="bg-green-900 border border-green-700 rounded p-3 mt-2">
+  <div class="text-green-300 font-medium">&#10003; PDF generated</div>
+  <a href="/download/{filename}" target="_blank"
+     class="text-blue-400 underline text-sm mt-1 inline-block">
+    &#8595; Download {filename}
+  </a>
+</div>'''
+        except Exception as exc:
+            logger.exception("PDF generation error")
+            return f'<div class="text-red-400">Error: {exc}</div>', 500
+
+    @app.route("/download/<path:filename>", methods=["GET"])
+    @login_required
+    def download_file(filename):
+        """Serve generated PDF files for download."""
+        import re
+        from flask import send_from_directory
+        # Allow only safe filenames (no path traversal)
+        if not re.match(r'^[\w\-\.]+$', filename):
+            return jsonify({"error": "Invalid filename"}), 400
+        pdf_dir = os.path.abspath("output/pdfs")
+        return send_from_directory(pdf_dir, filename, as_attachment=True)
+
     @app.route("/api/generate-cover", methods=["POST"])
     def generate_cover_route():
         try:
