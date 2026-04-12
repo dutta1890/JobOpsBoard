@@ -590,6 +590,77 @@ def create_app():
         result = email_applicator.test_connection()
         return jsonify(result)
 
+    @app.route("/check-emails", methods=["POST"])
+    def check_emails():
+        from services.email_tracker import email_tracker
+
+        replies = email_tracker.check_replies()
+
+        if isinstance(replies, dict) and "error" in replies:
+            return f'<div class="text-red-400 text-sm p-2">{replies["error"]}</div>'
+
+        if not replies:
+            return '<div class="text-gray-400 text-sm p-2">No job-related replies found in the last 30 days.</div>'
+
+        badge_classes = {
+            "interview": "bg-green-900 text-green-300",
+            "rejection": "bg-red-900 text-red-300",
+            "reply": "bg-blue-900 text-blue-300",
+        }
+
+        html = '<div class="space-y-2">'
+        for r in replies[:10]:
+            badge = badge_classes.get(r["type"], "bg-gray-700 text-gray-300")
+            subject_short = r["subject"][:60] + ("…" if len(r["subject"]) > 60 else "")
+            from_short = r["from"][:50] + ("…" if len(r["from"]) > 50 else "")
+            html += f'''<div class="bg-gray-800 p-3 rounded-lg border border-gray-700">
+  <div class="flex items-start justify-between gap-2">
+    <span class="text-white text-sm">{subject_short}</span>
+    <span class="px-2 py-0.5 {badge} rounded text-xs font-medium whitespace-nowrap">{r["type"].upper()}</span>
+  </div>
+  <div class="text-gray-500 text-xs mt-1">{from_short}</div>
+  <div class="text-gray-600 text-xs mt-0.5">{r.get("date", "")[:25]}</div>
+</div>'''
+        html += "</div>"
+        return html
+
+    @app.route("/api/email-summary", methods=["GET"])
+    def api_email_summary():
+        from services.email_tracker import email_tracker
+        summary = email_tracker.get_summary()
+        return jsonify(summary)
+
+    @app.route("/api/form-apply", methods=["POST"])
+    def api_form_apply():
+        try:
+            body = request.get_json(silent=True) or {}
+            url = (body.get("url") or "").strip()
+            form_type = (body.get("form_type") or "auto").lower()
+
+            if not url:
+                return jsonify({"success": False, "error": "No URL provided."}), 400
+
+            from services.form_applicator import form_applicator
+
+            if form_type == "google" or "docs.google.com/forms" in url:
+                result = form_applicator.apply_google_form(url)
+            else:
+                result = form_applicator.apply_web_form(url)
+
+            app_id = body.get("app_id")
+            if result.get("success") and app_id:
+                app_record = Application.query.get(app_id)
+                if app_record:
+                    app_record.status = "Applied"
+                    app_record.applied_date = datetime.utcnow()
+                    db.session.commit()
+
+            return jsonify(result)
+
+        except Exception as e:
+            logger.exception("Unhandled error in /api/form-apply")
+            return jsonify({"success": False, "error": "Form application failed."}), 500
+
     @app.route("/api/sources")
     def api_sources():
         from services.sources import get_sources_for_scanning, count_sources

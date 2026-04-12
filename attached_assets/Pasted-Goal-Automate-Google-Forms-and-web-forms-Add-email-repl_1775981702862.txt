@@ -1,0 +1,320 @@
+Goal
+Automate Google Forms and web forms. Add email reply tracking.
+Prompt for Replit AI
+Add form applicator and email tracking to Career-Ops.
+
+## TASK 1: Create services/form_applicator.py
+
+Create new file services/form_applicator.py:
+
+"""
+Form Applicator - 100% Automated
+Fills and submits Google Forms and web forms
+"""
+
+import time
+import re
+import os
+from playwright.sync_api import sync_playwright
+
+class FormApplicator:
+    """Automatically fills and submits forms."""
+    
+    def __init__(self):
+        # Your profile data
+        self.profile = {
+            'name': 'Aishik Dutta',
+            'first_name': 'Aishik',
+            'last_name': 'Dutta',
+            'email': 'dutta1890@gmail.com',
+            'phone': '+91-8741-03-4164',
+            'linkedin': 'https://linkedin.com/in/aishikduttaoct18',
+            'location': 'Mumbai, India',
+            'experience': '8',
+            'current_company': 'Alo Creative LLP',
+            'current_role': 'Performance Marketer',
+            'notice_period': '2 months',
+            'expected_salary': '15-25 LPA',
+        }
+        
+        # Field patterns
+        self.patterns = {
+            'name': [r'full\s*name', r'your\s*name', r'^name$'],
+            'first_name': [r'first\s*name'],
+            'last_name': [r'last\s*name', r'surname'],
+            'email': [r'email', r'e-mail'],
+            'phone': [r'phone', r'mobile', r'contact'],
+            'linkedin': [r'linkedin'],
+            'location': [r'location', r'city'],
+            'experience': [r'experience', r'years'],
+            'current_company': [r'current.*company', r'employer'],
+            'current_role': [r'current.*(role|title|designation)'],
+            'notice_period': [r'notice', r'availability'],
+            'expected_salary': [r'expected.*(salary|ctc)'],
+        }
+        
+        self.playwright = None
+        self.browser = None
+        self.page = None
+    
+    def start_browser(self, headless=True):
+        """Start browser."""
+        self.playwright = sync_playwright().start()
+        self.browser = self.playwright.chromium.launch(headless=headless)
+        self.context = self.browser.new_context()
+        self.page = self.context.new_page()
+    
+    def stop_browser(self):
+        """Stop browser."""
+        if self.browser:
+            self.browser.close()
+        if self.playwright:
+            self.playwright.stop()
+    
+    def detect_field(self, label):
+        """Detect field type from label."""
+        label_lower = label.lower()
+        for field, patterns in self.patterns.items():
+            for pattern in patterns:
+                if re.search(pattern, label_lower):
+                    return field
+        return None
+    
+    def apply_google_form(self, url):
+        """Fill and submit Google Form."""
+        try:
+            if not self.browser:
+                self.start_browser(headless=True)
+            
+            self.page.goto(url, wait_until='networkidle')
+            time.sleep(2)
+            
+            # Get form items
+            items = self.page.query_selector_all('[data-params]')
+            
+            for item in items:
+                # Get question
+                q_elem = item.query_selector('[role="heading"]')
+                if not q_elem:
+                    continue
+                
+                question = q_elem.inner_text()
+                field_type = self.detect_field(question)
+                
+                # Fill text input
+                input_elem = item.query_selector('input[type="text"], textarea')
+                if input_elem and field_type and field_type in self.profile:
+                    input_elem.fill(self.profile[field_type])
+                    time.sleep(0.2)
+                
+                # Handle yes/no (relocation, etc.)
+                if 'relocat' in question.lower() or 'willing' in question.lower():
+                    yes_btn = item.query_selector('[data-value="Yes"]')
+                    if yes_btn:
+                        yes_btn.click()
+                        time.sleep(0.2)
+            
+            # Submit
+            submit = self.page.query_selector('[type="submit"]')
+            if submit:
+                submit.click()
+                time.sleep(3)
+            
+            # Check success
+            if 'formResponse' in self.page.url or 'response' in self.page.content().lower():
+                return {'success': True, 'method': 'google_form'}
+            
+            return {'success': True, 'method': 'google_form', 'note': 'Submitted'}
+            
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+        finally:
+            self.stop_browser()
+    
+    def apply_web_form(self, url):
+        """Fill generic web form."""
+        try:
+            if not self.browser:
+                self.start_browser(headless=True)
+            
+            self.page.goto(url, wait_until='networkidle')
+            time.sleep(2)
+            
+            # Find labels and fill
+            labels = self.page.query_selector_all('label')
+            
+            for label in labels:
+                label_text = label.inner_text()
+                field_type = self.detect_field(label_text)
+                
+                if field_type and field_type in self.profile:
+                    for_attr = label.get_attribute('for')
+                    if for_attr:
+                        inp = self.page.query_selector(f'#{for_attr}')
+                        if inp:
+                            inp.fill(self.profile[field_type])
+                            time.sleep(0.2)
+            
+            # File upload
+            file_input = self.page.query_selector('input[type="file"]')
+            if file_input and os.path.exists('data/cv.pdf'):
+                file_input.set_input_files('data/cv.pdf')
+                time.sleep(1)
+            
+            # Submit
+            submit = self.page.query_selector('button[type="submit"], input[type="submit"]')
+            if submit:
+                submit.click()
+                time.sleep(3)
+            
+            return {'success': True, 'method': 'web_form'}
+            
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+        finally:
+            self.stop_browser()
+
+
+# Global instance
+form_applicator = FormApplicator()
+
+
+## TASK 2: Create services/email_tracker.py
+
+Create new file services/email_tracker.py:
+
+"""
+Email Tracker - Check for replies to applications
+"""
+
+import imaplib
+import email
+from email.header import decode_header
+import os
+from datetime import datetime, timedelta
+
+class EmailTracker:
+    """Track email replies."""
+    
+    def __init__(self):
+        self.imap_server = os.environ.get('IMAP_SERVER', 'imap.gmail.com')
+        self.email_address = os.environ.get('EMAIL_ADDRESS', '')
+        self.email_password = os.environ.get('EMAIL_APP_PASSWORD', '')
+    
+    def check_replies(self, companies=None, days=30):
+        """
+        Check inbox for replies from companies.
+        Returns list of replies found.
+        """
+        if not self.email_address or not self.email_password:
+            return {'error': 'Email not configured'}
+        
+        replies = []
+        
+        try:
+            mail = imaplib.IMAP4_SSL(self.imap_server)
+            mail.login(self.email_address, self.email_password)
+            mail.select('INBOX')
+            
+            # Search recent emails
+            since_date = (datetime.now() - timedelta(days=days)).strftime('%d-%b-%Y')
+            _, messages = mail.search(None, f'(SINCE {since_date})')
+            
+            for num in messages[0].split()[-50:]:  # Last 50 emails
+                _, msg_data = mail.fetch(num, '(RFC822)')
+                msg = email.message_from_bytes(msg_data[0][1])
+                
+                # Decode subject
+                subject, encoding = decode_header(msg['Subject'])[0]
+                if isinstance(subject, bytes):
+                    subject = subject.decode(encoding or 'utf-8')
+                
+                from_addr = msg.get('From', '')
+                
+                # Skip our own emails
+                if self.email_address.lower() in from_addr.lower():
+                    continue
+                
+                # Check for job-related keywords
+                subject_lower = subject.lower()
+                
+                is_interview = any(kw in subject_lower for kw in [
+                    'interview', 'schedule', 'call', 'next steps'
+                ])
+                
+                is_rejection = any(kw in subject_lower for kw in [
+                    'unfortunately', 'regret', 'not moving forward', 'other candidates'
+                ])
+                
+                is_reply = any(kw in subject_lower for kw in [
+                    'application', 'position', 'role', 'opportunity', 'thank you'
+                ])
+                
+                if is_interview or is_rejection or is_reply:
+                    reply_type = 'interview' if is_interview else ('rejection' if is_rejection else 'reply')
+                    
+                    replies.append({
+                        'subject': subject,
+                        'from': from_addr,
+                        'type': reply_type,
+                        'date': msg.get('Date', '')
+                    })
+            
+            mail.logout()
+            return replies
+            
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def get_summary(self):
+        """Get reply summary."""
+        replies = self.check_replies()
+        
+        if isinstance(replies, dict) and 'error' in replies:
+            return replies
+        
+        return {
+            'total': len(replies),
+            'interviews': len([r for r in replies if r['type'] == 'interview']),
+            'rejections': len([r for r in replies if r['type'] == 'rejection']),
+            'other': len([r for r in replies if r['type'] == 'reply'])
+        }
+
+
+# Global instance
+email_tracker = EmailTracker()
+
+
+## TASK 3: Add routes to main.py
+
+Add these routes:
+
+@app.route('/check-emails', methods=['POST'])
+def check_emails():
+    from services.email_tracker import email_tracker
+    
+    replies = email_tracker.check_replies()
+    
+    if isinstance(replies, dict) and 'error' in replies:
+        return f'<div class="text-red-400">{replies["error"]}</div>'
+    
+    if not replies:
+        return '<div class="text-gray-400">No new replies found</div>'
+    
+    html = '<div class="space-y-2">'
+    for r in replies[:10]:
+        badge = 'bg-green-900 text-green-300' if r['type'] == 'interview' else (
+            'bg-red-900 text-red-300' if r['type'] == 'rejection' else 'bg-blue-900 text-blue-300'
+        )
+        html += f'''
+        <div class="bg-gray-800 p-3 rounded">
+            <div class="flex justify-between">
+                <span class="text-white">{r['subject'][:50]}...</span>
+                <span class="px-2 py-1 {badge} rounded text-xs">{r['type'].upper()}</span>
+            </div>
+            <div class="text-gray-500 text-xs mt-1">{r['from'][:40]}</div>
+        </div>
+        '''
+    html += '</div>'
+    
+    return html
