@@ -186,19 +186,62 @@ def pre_filter_job(job_data: dict) -> dict:
 def evaluate_job(jd_text: str, job_metadata: dict | None = None) -> dict:
     """Evaluate a job description.
 
-    Runs pre-filters first (if job_metadata provided), then delegates to
-    the core evaluator in claude_client which has the full 10-dimension
-    scoring system and Aishik's complete profile.
+    Pipeline order:
+      1. URL legitimacy check (blocks dangerous/suspicious sources immediately)
+      2. JD text scam-pattern scan
+      3. Pre-filters (age + seniority)
+      4. Core 10-dimension Gemini/Claude scoring
 
     Args:
         jd_text: Raw job description text.
-        job_metadata: Optional dict with posted_date, title, experience_required,
-                      description for pre-filtering.
+        job_metadata: Optional dict with url, posted_date, title,
+                      experience_required, description for filtering.
 
     Returns:
-        dict with success/error keys, plus pre-filter metadata.
+        dict with success/error keys plus filter/legitimacy metadata.
     """
-    # Pre-filter gate
+    # ── Layer 0: URL legitimacy ────────────────────────────────────────────────
+    url = (job_metadata or {}).get("url", "")
+    if url:
+        from services.legitimacy_checker import legitimacy_checker
+        legit = legitimacy_checker.check_url(url)
+        if not legit["legitimate"]:
+            blocks = legit.get("blocks", [])
+            reason = "; ".join(blocks) if blocks else f"Tier: {legit['tier']}"
+            logger.warning(f"[legitimacy] Blocked URL {url} — {reason}")
+            return {
+                "success": False,
+                "filtered": True,
+                "filter_type": "legitimacy",
+                "skip_reason": f"Suspicious source — {reason}",
+                "legitimacy": legit,
+                "score": 0,
+                "grade": "F",
+                "recommendation": "Skip — Suspicious Source",
+            }
+        # Attach legitimacy data even for passing URLs
+        _legitimacy_meta = legit
+    else:
+        _legitimacy_meta = None
+
+    # ── Layer 0b: JD text scam scan ───────────────────────────────────────────
+    if jd_text:
+        from services.legitimacy_checker import legitimacy_checker
+        jd_check = legitimacy_checker.check_jd_text(jd_text)
+        if jd_check["is_scam"]:
+            logger.warning(f"[legitimacy] JD text failed scam scan")
+            return {
+                "success": False,
+                "filtered": True,
+                "filter_type": "scam_pattern",
+                "skip_reason": "Job description contains scam patterns",
+                "legitimacy": jd_check,
+                "score": 0,
+                "grade": "F",
+                "recommendation": "Skip — Scam Pattern Detected",
+            }
+
+    # ── Layer 1: Pre-filter gate ───────────────────────────────────────────────
     if job_metadata:
         pf = pre_filter_job(job_metadata)
         if not pf["proceed"]:

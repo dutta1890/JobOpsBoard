@@ -1,0 +1,297 @@
+Goal
+Verify websites are legitimate before visiting or applying.
+Prompt for Replit AI
+Add URL and website legitimacy checking to Career-Ops.
+
+## TASK 1: Create services/legitimacy_checker.py
+
+"""
+Legitimacy Checker - Verifies if websites and job postings are legitimate
+Protects against phishing, scams, and malicious sites
+"""
+
+import requests
+import re
+import socket
+from urllib.parse import urlparse
+from datetime import datetime
+import ssl
+import whois
+
+# ═══════════════════════════════════════════════════════════════
+# KNOWN LEGITIMATE DOMAINS
+# ═══════════════════════════════════════════════════════════════
+
+TRUSTED_JOB_PORTALS = [
+    'linkedin.com', 'indeed.com', 'glassdoor.com', 'naukri.com',
+    'monster.com', 'shine.com', 'instahyre.com', 'cutshort.io',
+    'greenhouse.io', 'lever.co', 'workday.com', 'ashbyhq.com',
+    'angel.co', 'wellfound.com', 'jobs.lever.co', 'boards.greenhouse.io',
+    'apply.workable.com', 'jobvite.com', 'icims.com', 'myworkdayjobs.com',
+    'smartrecruiters.com', 'recruitee.com', 'breezy.hr',
+    # India specific
+    'foundit.in', 'iimjobs.com', 'hirist.com',
+    # Singapore
+    'jobstreet.com.sg', 'mycareersfuture.gov.sg', 'jobsdb.com',
+    # UAE
+    'bayt.com', 'gulftalent.com', 'naukrigulf.com', 'dubizzle.com',
+    # Europe
+    'stepstone.de', 'xing.com', 'indeed.de', 'indeed.nl',
+    'jobindex.dk', 'landing.jobs',
+    # Google
+    'docs.google.com', 'forms.gle',
+]
+
+TRUSTED_COMPANY_DOMAINS = [
+    # Tech Giants
+    'google.com', 'meta.com', 'amazon.com', 'microsoft.com', 'apple.com',
+    'linkedin.com', 'twitter.com', 'netflix.com', 'uber.com', 'airbnb.com',
+    # AI Companies
+    'anthropic.com', 'openai.com', 'deepmind.com', 'cohere.com',
+    # Indian Tech
+    'flipkart.com', 'swiggy.com', 'zomato.com', 'razorpay.com', 
+    'freshworks.com', 'zoho.com', 'phonepe.com', 'cred.club',
+    # UAE
+    'noon.com', 'careem.com', 'talabat.com', 'majid-al-futtaim.com',
+]
+
+BLACKLISTED_PATTERNS = [
+    r'work.*from.*home.*earn',
+    r'easy.*money',
+    r'no.*experience.*required.*\$\d{4,}',
+    r'crypto.*trading',
+    r'forex.*trading',
+    r'mlm',
+    r'pyramid',
+    r'guaranteed.*income',
+]
+
+
+# ═══════════════════════════════════════════════════════════════
+# URL LEGITIMACY CHECK
+# ═══════════════════════════════════════════════════════════════
+
+class LegitimacyChecker:
+    """Checks if URLs and job postings are legitimate."""
+    
+    def check_url(self, url: str) -> dict:
+        """
+        Comprehensive URL legitimacy check.
+        Returns: {
+            legitimate: bool,
+            tier: 'trusted' | 'verified' | 'unknown' | 'suspicious' | 'dangerous',
+            score: 0-100,
+            warnings: [],
+            blocks: []
+        }
+        """
+        result = {
+            'legitimate': True,
+            'tier': 'unknown',
+            'score': 50,
+            'warnings': [],
+            'blocks': [],
+            'checks': {}
+        }
+        
+        # Parse URL
+        try:
+            parsed = urlparse(url)
+            domain = parsed.netloc.lower()
+            
+            # Remove www prefix
+            if domain.startswith('www.'):
+                domain = domain[4:]
+            
+        except Exception as e:
+            result['legitimate'] = False
+            result['tier'] = 'dangerous'
+            result['blocks'].append(f'Invalid URL: {e}')
+            return result
+        
+        # Check 1: Trusted job portal
+        if self._is_trusted_portal(domain):
+            result['tier'] = 'trusted'
+            result['score'] = 95
+            result['checks']['trusted_portal'] = True
+            return result
+        
+        # Check 2: Trusted company domain
+        if self._is_trusted_company(domain):
+            result['tier'] = 'trusted'
+            result['score'] = 90
+            result['checks']['trusted_company'] = True
+            return result
+        
+        # Check 3: SSL Certificate
+        ssl_check = self._check_ssl(domain)
+        result['checks']['ssl'] = ssl_check
+        if not ssl_check['valid']:
+            result['warnings'].append('No valid SSL certificate')
+            result['score'] -= 20
+        
+        # Check 4: Domain age
+        age_check = self._check_domain_age(domain)
+        result['checks']['domain_age'] = age_check
+        if age_check.get('days', 0) < 180:
+            result['warnings'].append(f'Domain is only {age_check.get("days", 0)} days old')
+            result['score'] -= 15
+        
+        # Check 5: Suspicious TLD
+        if self._has_suspicious_tld(domain):
+            result['warnings'].append('Suspicious top-level domain')
+            result['score'] -= 10
+        
+        # Check 6: Typosquatting check
+        typo_check = self._check_typosquatting(domain)
+        if typo_check['is_typosquat']:
+            result['blocks'].append(f'Possible typosquatting of: {typo_check["similar_to"]}')
+            result['score'] -= 40
+        
+        # Check 7: IP-based URL (not domain)
+        if self._is_ip_based(parsed.netloc):
+            result['blocks'].append('URL uses IP address instead of domain')
+            result['score'] -= 50
+        
+        # Determine final tier
+        if result['blocks']:
+            result['legitimate'] = False
+            result['tier'] = 'dangerous'
+        elif result['score'] >= 80:
+            result['tier'] = 'verified'
+        elif result['score'] >= 50:
+            result['tier'] = 'unknown'
+        else:
+            result['tier'] = 'suspicious'
+            result['legitimate'] = False
+        
+        return result
+    
+    def _is_trusted_portal(self, domain: str) -> bool:
+        """Check if domain is a known job portal."""
+        for portal in TRUSTED_JOB_PORTALS:
+            if domain == portal or domain.endswith('.' + portal):
+                return True
+        return False
+    
+    def _is_trusted_company(self, domain: str) -> bool:
+        """Check if domain is a known company."""
+        for company in TRUSTED_COMPANY_DOMAINS:
+            if domain == company or domain.endswith('.' + company):
+                return True
+        return False
+    
+    def _check_ssl(self, domain: str) -> dict:
+        """Check SSL certificate validity."""
+        try:
+            context = ssl.create_default_context()
+            with socket.create_connection((domain, 443), timeout=5) as sock:
+                with context.wrap_socket(sock, server_hostname=domain) as ssock:
+                    cert = ssock.getpeercert()
+                    return {
+                        'valid': True,
+                        'issuer': dict(x[0] for x in cert.get('issuer', [])),
+                        'expires': cert.get('notAfter', '')
+                    }
+        except Exception as e:
+            return {'valid': False, 'error': str(e)}
+    
+    def _check_domain_age(self, domain: str) -> dict:
+        """Check domain registration age."""
+        try:
+            w = whois.whois(domain)
+            creation = w.creation_date
+            if isinstance(creation, list):
+                creation = creation[0]
+            if creation:
+                age_days = (datetime.now() - creation).days
+                return {'days': age_days, 'created': str(creation)}
+        except:
+            pass
+        return {'days': None, 'error': 'Could not determine'}
+    
+    def _has_suspicious_tld(self, domain: str) -> bool:
+        """Check for suspicious TLDs."""
+        suspicious_tlds = [
+            '.tk', '.ml', '.ga', '.cf', '.gq',  # Free domains often used for scams
+            '.xyz', '.top', '.work', '.click',   # Cheap domains
+            '.loan', '.racing', '.win', '.download',
+        ]
+        return any(domain.endswith(tld) for tld in suspicious_tlds)
+    
+    def _check_typosquatting(self, domain: str) -> dict:
+        """Check if domain is typosquatting a known brand."""
+        known_brands = [
+            'linkedin', 'indeed', 'glassdoor', 'google', 'facebook',
+            'amazon', 'microsoft', 'apple', 'naukri', 'flipkart'
+        ]
+        
+        domain_base = domain.split('.')[0]
+        
+        for brand in known_brands:
+            # Check Levenshtein distance
+            if self._levenshtein(domain_base, brand) <= 2 and domain_base != brand:
+                return {'is_typosquat': True, 'similar_to': brand}
+        
+        return {'is_typosquat': False}
+    
+    def _is_ip_based(self, netloc: str) -> bool:
+        """Check if URL uses IP address."""
+        ip_pattern = r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}'
+        return bool(re.match(ip_pattern, netloc))
+    
+    def _levenshtein(self, s1: str, s2: str) -> int:
+        """Calculate Levenshtein distance."""
+        if len(s1) < len(s2):
+            return self._levenshtein(s2, s1)
+        if len(s2) == 0:
+            return len(s1)
+        
+        prev_row = range(len(s2) + 1)
+        for i, c1 in enumerate(s1):
+            curr_row = [i + 1]
+            for j, c2 in enumerate(s2):
+                insertions = prev_row[j + 1] + 1
+                deletions = curr_row[j] + 1
+                substitutions = prev_row[j] + (c1 != c2)
+                curr_row.append(min(insertions, deletions, substitutions))
+            prev_row = curr_row
+        
+        return prev_row[-1]
+
+
+# Global instance
+legitimacy_checker = LegitimacyChecker()
+
+
+## TASK 2: Integrate with evaluation pipeline
+
+In services/gemini_client.py, add:
+
+from services.legitimacy_checker import legitimacy_checker
+
+def evaluate_job(jd_text, job_metadata=None):
+    # FIRST: Check URL legitimacy
+    url = job_metadata.get('url', '') if job_metadata else ''
+    
+    if url:
+        legit_check = legitimacy_checker.check_url(url)
+        
+        if not legit_check['legitimate']:
+            return {
+                'skip': True,
+                'skip_reason': f"URL legitimacy failed: {legit_check['tier']}",
+                'legitimacy': legit_check,
+                'blocks': legit_check.get('blocks', []),
+                'score': 0,
+                'grade': 'F',
+                'recommendation': 'Skip - Suspicious Source'
+            }
+    
+    # Continue with existing evaluation...
+    # (rest of function)
+
+
+## TASK 3: Add to requirements.txt
+
+python-whois==0.8.0
