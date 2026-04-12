@@ -224,22 +224,28 @@ def evaluate_job(jd_text: str, job_metadata: dict | None = None) -> dict:
     else:
         _legitimacy_meta = None
 
-    # ── Layer 0b: JD text scam scan ───────────────────────────────────────────
-    if jd_text:
-        from services.legitimacy_checker import legitimacy_checker
-        jd_check = legitimacy_checker.check_jd_text(jd_text)
-        if jd_check["is_scam"]:
-            logger.warning(f"[legitimacy] JD text failed scam scan")
-            return {
-                "success": False,
-                "filtered": True,
-                "filter_type": "scam_pattern",
-                "skip_reason": "Job description contains scam patterns",
-                "legitimacy": jd_check,
-                "score": 0,
-                "grade": "F",
-                "recommendation": "Skip — Scam Pattern Detected",
-            }
+    # ── Layer 0b: Scam detection (rich multi-tier check) ─────────────────────
+    from services.scam_detector import scam_detector
+    _scam_check = scam_detector.check_posting(
+        jd_text,
+        company=(job_metadata or {}).get("company", ""),
+        salary=(job_metadata or {}).get("salary", ""),
+    )
+    if not _scam_check["safe"]:
+        tier = _scam_check["tier"]
+        flags = [f["message"] for f in _scam_check.get("red_flags", [])]
+        reason = f"Scam detection ({tier})" + (f": {', '.join(flags)}" if flags else "")
+        logger.warning(f"[scam] Blocked — {reason}")
+        return {
+            "success": False,
+            "filtered": True,
+            "filter_type": "scam",
+            "skip_reason": reason,
+            "scam_check": _scam_check,
+            "score": 0,
+            "grade": "F",
+            "recommendation": "Skip — Potential Scam",
+        }
 
     # ── Layer 1: Pre-filter gate ───────────────────────────────────────────────
     if job_metadata:
@@ -268,6 +274,15 @@ def evaluate_job(jd_text: str, job_metadata: dict | None = None) -> dict:
         result["days_old"] = pf.get("days_old")
     elif result.get("success"):
         result["priority"] = "medium"
+
+    # Attach scam/legitimacy metadata to successful evaluations
+    if result.get("success"):
+        result["scam_tier"] = _scam_check["tier"]
+        result["scam_warnings"] = _scam_check.get("warnings", [])
+        result["scam_recommendations"] = _scam_check.get("recommendations", [])
+        if _legitimacy_meta:
+            result["legitimacy_tier"] = _legitimacy_meta.get("tier", "unknown")
+            result["legitimacy_score"] = _legitimacy_meta.get("score", 50)
 
     return result
 

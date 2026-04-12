@@ -1,0 +1,316 @@
+Goal
+Detect scam job postings before applying.
+Prompt for Replit AI
+Add job posting scam detection to Career-Ops.
+
+## TASK 1: Create services/scam_detector.py
+
+"""
+Scam Detector - Identifies fraudulent job postings
+Protects against fake jobs, phishing, and identity theft
+"""
+
+import re
+from typing import List, Dict
+
+class ScamDetector:
+    """Detects scam job postings."""
+    
+    # ═══════════════════════════════════════════════════════════════
+    # INSTANT RED FLAGS (Auto-Block)
+    # ═══════════════════════════════════════════════════════════════
+    
+    INSTANT_BLOCKS = {
+        'money_request': [
+            r'pay.*(?:registration|training|materials|fee)',
+            r'(?:send|transfer|wire).*(?:money|\$|₹|USD|INR)',
+            r'deposit.*(?:required|needed)',
+            r'upfront.*(?:payment|cost|fee)',
+            r'(?:western union|moneygram|crypto)',
+        ],
+        'personal_data_early': [
+            r'(?:passport|ssn|social security|aadhaar|pan card).*(?:required|needed|copy)',
+            r'send.*(?:id|identity).*proof',
+            r'bank.*(?:details|account).*(?:needed|required)',
+        ],
+        'too_good': [
+            r'earn.*\$\d{4,}.*(?:week|day|hour)',
+            r'(?:no experience|anyone can).*(?:apply|earn)',
+            r'guaranteed.*(?:income|job|placement)',
+            r'unlimited.*(?:earning|income)',
+        ],
+        'known_scams': [
+            r'(?:data entry|typing).*(?:work from home|\$\d{3,})',
+            r'(?:reshipping|package forwarding)',
+            r'(?:mystery shopper|secret shopper)',
+            r'(?:envelope stuffing|assembl)',
+        ],
+    }
+    
+    # ═══════════════════════════════════════════════════════════════
+    # WARNING FLAGS (Score Reduction)
+    # ═══════════════════════════════════════════════════════════════
+    
+    WARNING_FLAGS = {
+        'vague_description': {
+            'patterns': [],
+            'check_func': '_check_vague_description',
+            'score_penalty': 15,
+        },
+        'personal_email': {
+            'patterns': [
+                r'(?:contact|email|apply).*@(?:gmail|yahoo|hotmail|outlook)\.com',
+            ],
+            'score_penalty': 20,
+        },
+        'whatsapp_only': {
+            'patterns': [
+                r'(?:whatsapp|telegram).*(?:only|contact)',
+                r'(?:contact|reach).*(?:whatsapp|telegram)',
+            ],
+            'score_penalty': 25,
+        },
+        'urgency': {
+            'patterns': [
+                r'(?:apply|respond).*(?:immediately|today|now|urgent)',
+                r'(?:position|offer).*(?:expires|closing).*(?:today|soon)',
+                r'(?:limited|few).*(?:spots|positions|openings)',
+            ],
+            'score_penalty': 10,
+        },
+        'unrealistic_salary': {
+            'patterns': [],
+            'check_func': '_check_unrealistic_salary',
+            'score_penalty': 20,
+        },
+        'no_company_details': {
+            'patterns': [],
+            'check_func': '_check_missing_company',
+            'score_penalty': 15,
+        },
+        'generic_company_name': {
+            'patterns': [
+                r'(?:global|international|world).*(?:solutions|services|group)',
+                r'(?:tech|digital).*(?:innovations|systems|corp)',
+            ],
+            'score_penalty': 10,
+        },
+    }
+    
+    # ═══════════════════════════════════════════════════════════════
+    # SALARY BENCHMARKS (for unrealistic salary detection)
+    # ═══════════════════════════════════════════════════════════════
+    
+    SALARY_BENCHMARKS = {
+        'india': {
+            'junior': (300000, 800000),      # 3-8 LPA
+            'mid': (800000, 2000000),         # 8-20 LPA
+            'senior': (2000000, 5000000),     # 20-50 LPA
+            'lead': (3000000, 8000000),       # 30-80 LPA
+            'max_reasonable': 15000000,       # 1.5 Cr (very senior)
+        },
+        'uae': {
+            'junior': (8000, 15000),          # AED/month
+            'mid': (15000, 30000),
+            'senior': (30000, 50000),
+            'lead': (40000, 80000),
+            'max_reasonable': 150000,
+        },
+        'singapore': {
+            'junior': (40000, 70000),         # SGD/year
+            'mid': (70000, 120000),
+            'senior': (120000, 200000),
+            'lead': (180000, 350000),
+            'max_reasonable': 500000,
+        },
+    }
+    
+    def check_posting(self, jd_text: str, company: str = '', salary: str = '') -> Dict:
+        """
+        Check job posting for scam indicators.
+        Returns: {
+            safe: bool,
+            tier: 'safe' | 'caution' | 'suspicious' | 'scam',
+            score: 0-100,
+            red_flags: [],
+            warnings: [],
+            recommendations: []
+        }
+        """
+        result = {
+            'safe': True,
+            'tier': 'safe',
+            'score': 100,
+            'red_flags': [],
+            'warnings': [],
+            'recommendations': []
+        }
+        
+        jd_lower = jd_text.lower() if jd_text else ''
+        
+        # Check instant blocks
+        for category, patterns in self.INSTANT_BLOCKS.items():
+            for pattern in patterns:
+                if re.search(pattern, jd_lower, re.IGNORECASE):
+                    result['safe'] = False
+                    result['tier'] = 'scam'
+                    result['score'] = 0
+                    result['red_flags'].append({
+                        'category': category,
+                        'severity': 'critical',
+                        'message': f'Detected: {category.replace("_", " ")}'
+                    })
+                    return result  # Immediate block
+        
+        # Check warning flags
+        for flag_name, flag_config in self.WARNING_FLAGS.items():
+            triggered = False
+            
+            # Pattern-based check
+            if flag_config.get('patterns'):
+                for pattern in flag_config['patterns']:
+                    if re.search(pattern, jd_lower, re.IGNORECASE):
+                        triggered = True
+                        break
+            
+            # Function-based check
+            if flag_config.get('check_func'):
+                func = getattr(self, flag_config['check_func'], None)
+                if func and func(jd_text, company, salary):
+                    triggered = True
+            
+            if triggered:
+                penalty = flag_config.get('score_penalty', 10)
+                result['score'] -= penalty
+                result['warnings'].append({
+                    'flag': flag_name,
+                    'penalty': penalty,
+                    'message': flag_name.replace('_', ' ').title()
+                })
+        
+        # Determine tier
+        if result['score'] >= 80:
+            result['tier'] = 'safe'
+        elif result['score'] >= 60:
+            result['tier'] = 'caution'
+            result['recommendations'].append('Verify company details before applying')
+        elif result['score'] >= 40:
+            result['tier'] = 'suspicious'
+            result['safe'] = False
+            result['recommendations'].append('High risk - verify company extensively')
+            result['recommendations'].append('Never share personal/financial details')
+        else:
+            result['tier'] = 'scam'
+            result['safe'] = False
+            result['recommendations'].append('Do not apply - likely scam')
+        
+        return result
+    
+    def _check_vague_description(self, jd_text: str, company: str, salary: str) -> bool:
+        """Check if description is suspiciously vague."""
+        if not jd_text:
+            return True
+        
+        # Less than 100 words
+        word_count = len(jd_text.split())
+        if word_count < 100:
+            return True
+        
+        # No specific requirements mentioned
+        specifics = [
+            'years', 'experience', 'degree', 'skills',
+            'responsibilities', 'requirements', 'qualifications'
+        ]
+        if not any(s in jd_text.lower() for s in specifics):
+            return True
+        
+        return False
+    
+    def _check_unrealistic_salary(self, jd_text: str, company: str, salary: str) -> bool:
+        """Check if salary is unrealistically high."""
+        if not salary:
+            return False
+        
+        # Extract numbers from salary
+        numbers = re.findall(r'[\d,]+', salary.replace(',', ''))
+        if not numbers:
+            return False
+        
+        max_num = max(int(n) for n in numbers if n.isdigit())
+        
+        # Very rough check - if number seems unrealistic
+        # Adjust based on currency detection
+        if 'lpa' in salary.lower() or '₹' in salary:
+            if max_num > 200:  # > 200 LPA seems unrealistic
+                return True
+        elif 'usd' in salary.lower() or '$' in salary:
+            if max_num > 500000:  # > 500K USD/year
+                return True
+        
+        return False
+    
+    def _check_missing_company(self, jd_text: str, company: str, salary: str) -> bool:
+        """Check if company details are missing."""
+        if not company or len(company) < 3:
+            return True
+        
+        # Generic placeholder names
+        placeholders = ['company', 'client', 'confidential', 'undisclosed']
+        if company.lower() in placeholders:
+            return True
+        
+        return False
+
+
+# Global instance
+scam_detector = ScamDetector()
+
+
+## TASK 2: Integrate with evaluation
+
+In services/gemini_client.py, add scam check:
+
+from services.scam_detector import scam_detector
+
+def evaluate_job(jd_text, job_metadata=None):
+    # ... existing URL legitimacy check ...
+    
+    # SECOND: Check for scam patterns
+    scam_check = scam_detector.check_posting(
+        jd_text,
+        company=job_metadata.get('company', '') if job_metadata else '',
+        salary=job_metadata.get('salary', '') if job_metadata else ''
+    )
+    
+    if not scam_check['safe']:
+        return {
+            'skip': True,
+            'skip_reason': f"Scam detection: {scam_check['tier']}",
+            'scam_check': scam_check,
+            'red_flags': scam_check['red_flags'],
+            'score': 0,
+            'grade': 'F',
+            'recommendation': 'Skip - Potential Scam'
+        }
+    
+    # Add warnings to evaluation result
+    # Continue with AI evaluation...
+
+
+## TASK 3: Add scam tier to evaluation output
+
+Update EVALUATE_PROMPT to include:
+
+## LEGITIMACY CHECK (Block G)
+Include in your evaluation:
+- **Legitimacy Tier**: safe | caution | suspicious
+- Any red flags detected
+- Recommendations for verification
+
+## OUTPUT JSON (add these fields):
+{
+  ...existing fields...
+  "legitimacy_tier": "safe|caution|suspicious",
+  "red_flags": [],
+  "verification_needed": true/false
+}

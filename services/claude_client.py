@@ -147,13 +147,18 @@ NO MENTION (visa_sponsorship = "unclear"):
   ],
   "interview_questions": ["likely question 1", "likely question 2"],
   "cover_letter_hook": "Opening line connecting experience to their need",
-  "key_proof_points": ["achievement 1", "achievement 2", "achievement 3"]
+  "key_proof_points": ["achievement 1", "achievement 2", "achievement 3"],
+  "legitimacy_tier": "safe|caution|suspicious",
+  "red_flags": ["flag 1 if any"],
+  "verification_needed": true
 }
 
 IMPORTANT:
 - Be brutally honest in scoring - no inflation
 - For international roles, visa check is MANDATORY
 - If Skip, always provide skip_reason
+- legitimacy_tier: 'safe' unless you detect suspicious patterns in the JD; 'caution' if company seems vague; 'suspicious' if the posting has unusual claims
+- verification_needed: true if company is unfamiliar, salary is unusually high, or posting seems too vague
 - Output ONLY valid JSON, nothing else'''
 
 REQUIRED_FIELDS = {
