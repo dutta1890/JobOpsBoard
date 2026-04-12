@@ -1,0 +1,5 @@
+{"timestamp": "2026-04-12T10:18:23.736978", "action": "login_attempt", "details": {"success": true}, "ip": "127.0.0.1"}
+{"timestamp": "2026-04-12T10:18:23.737529", "action": "job_evaluation", "details": {"url": "https://nykaa.com/jobs/1", "grade": "A", "company": "Nykaa"}, "ip": null}
+{"timestamp": "2026-04-12T10:18:23.738024", "action": "application_sent", "details": {"company": "Nykaa", "method": "EMAIL", "success": true}, "ip": null}
+{"timestamp": "2026-04-12T10:18:23.738568", "action": "scam_detected", "details": {"url": "https://fake.com", "tier": "scam", "red_flags": ["money_request"]}, "ip": null}
+{"timestamp": "2026-04-12T10:18:23.739046", "action": "agent_action", "details": {"action": "EVALUATE", "target": "https://naukri.com/job/123"}, "ip": null}

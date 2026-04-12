@@ -857,5 +857,23 @@ def create_app():
 
 app = create_app()
 
+
+def _scheduled_backup():
+    import time
+    while True:
+        time.sleep(24 * 60 * 60)
+        try:
+            from services.backup import backup_manager
+            result = backup_manager.run_full_backup()
+            app.logger.info(f"Scheduled backup completed: {result}")
+        except Exception as exc:
+            app.logger.warning(f"Scheduled backup failed: {exc}")
+
+
+import threading as _threading
+_backup_thread = _threading.Thread(target=_scheduled_backup, daemon=True, name="backup")
+_backup_thread.start()
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

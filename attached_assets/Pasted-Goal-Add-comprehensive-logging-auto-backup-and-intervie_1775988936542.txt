@@ -1,0 +1,242 @@
+Goal
+Add comprehensive logging, auto-backup, and interview story bank.
+Prompt for Replit AI
+Add audit logging, backups, and interview prep to Career-Ops.
+
+## TASK 1: Create services/audit_logger.py
+
+"""
+Audit Logger - Comprehensive logging for security and debugging
+"""
+
+import os
+import json
+from datetime import datetime
+from pathlib import Path
+
+class AuditLogger:
+    """Logs all agent activities for security audit."""
+    
+    def __init__(self):
+        self.log_dir = Path('logs')
+        self.log_dir.mkdir(exist_ok=True)
+        self.log_file = self.log_dir / f'audit_{datetime.now().strftime("%Y%m%d")}.jsonl'
+    
+    def log(self, action: str, details: dict, user_ip: str = None):
+        """Log an action with timestamp."""
+        entry = {
+            'timestamp': datetime.now().isoformat(),
+            'action': action,
+            'details': details,
+            'ip': user_ip
+        }
+        
+        with open(self.log_file, 'a') as f:
+            f.write(json.dumps(entry) + '\n')
+    
+    def log_login(self, success: bool, ip: str):
+        self.log('login_attempt', {'success': success}, ip)
+    
+    def log_evaluation(self, url: str, grade: str, company: str):
+        self.log('job_evaluation', {
+            'url': url, 'grade': grade, 'company': company
+        })
+    
+    def log_application(self, company: str, method: str, success: bool):
+        self.log('application_sent', {
+            'company': company, 'method': method, 'success': success
+        })
+    
+    def log_scam_detected(self, url: str, tier: str, red_flags: list):
+        self.log('scam_detected', {
+            'url': url, 'tier': tier, 'red_flags': red_flags
+        })
+    
+    def log_agent_action(self, action: str, target: str):
+        self.log('agent_action', {'action': action, 'target': target})
+
+
+audit_logger = AuditLogger()
+
+
+## TASK 2: Create services/backup.py
+
+"""
+Backup System - Auto-backup important data
+"""
+
+import shutil
+import os
+from datetime import datetime
+from pathlib import Path
+
+class BackupManager:
+    """Manages automatic backups."""
+    
+    def __init__(self):
+        self.backup_dir = Path('backups')
+        self.backup_dir.mkdir(exist_ok=True)
+        self.max_backups = 7  # Keep 7 days of backups
+    
+    def backup_database(self):
+        """Backup SQLite database."""
+        db_path = Path('data/career_ops.db')
+        if db_path.exists():
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_path = self.backup_dir / f'db_backup_{timestamp}.db'
+            shutil.copy2(db_path, backup_path)
+            self._cleanup_old_backups('db_backup_')
+            return str(backup_path)
+        return None
+    
+    def backup_applications(self):
+        """Backup application data."""
+        data_dir = Path('data')
+        if data_dir.exists():
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_path = self.backup_dir / f'data_backup_{timestamp}.zip'
+            shutil.make_archive(
+                str(backup_path).replace('.zip', ''),
+                'zip',
+                data_dir
+            )
+            self._cleanup_old_backups('data_backup_')
+            return str(backup_path)
+        return None
+    
+    def _cleanup_old_backups(self, prefix: str):
+        """Remove backups older than max_backups days."""
+        backups = sorted(
+            self.backup_dir.glob(f'{prefix}*'),
+            key=lambda x: x.stat().st_mtime,
+            reverse=True
+        )
+        for old_backup in backups[self.max_backups:]:
+            old_backup.unlink()
+
+
+backup_manager = BackupManager()
+
+
+## TASK 3: Create services/interview_prep.py
+
+"""
+Interview Prep - STAR story bank and interview preparation
+"""
+
+import json
+from pathlib import Path
+from services.gemini_client import model, rate_limited
+
+class InterviewPrep:
+    """Manages interview stories and preparation."""
+    
+    def __init__(self):
+        self.stories_file = Path('data/star_stories.json')
+        self.stories = self._load_stories()
+    
+    def _load_stories(self) -> list:
+        """Load existing stories."""
+        if self.stories_file.exists():
+            with open(self.stories_file) as f:
+                return json.load(f)
+        return []
+    
+    def _save_stories(self):
+        """Save stories to file."""
+        self.stories_file.parent.mkdir(exist_ok=True)
+        with open(self.stories_file, 'w') as f:
+            json.dump(self.stories, f, indent=2)
+    
+    @rate_limited
+    def generate_star_story(self, achievement: str, question_type: str) -> dict:
+        """Generate STAR+R story from achievement."""
+        prompt = f'''Generate a STAR+R interview story for Aishik Dutta.
+
+## ACHIEVEMENT:
+{achievement}
+
+## QUESTION TYPE:
+{question_type}
+
+## STAR+R FORMAT:
+- Situation: Context and challenge (2-3 sentences)
+- Task: Your specific responsibility (1-2 sentences)
+- Action: What you did, step by step (3-4 bullets)
+- Result: Quantified outcomes (2-3 metrics)
+- Reflection: What you learned/would do differently (1-2 sentences)
+
+## OUTPUT JSON:
+{{
+  "title": "Short title",
+  "question_types": ["Tell me about a time...", "..."],
+  "situation": "",
+  "task": "",
+  "actions": ["", "", ""],
+  "results": ["", ""],
+  "reflection": "",
+  "keywords": []
+}}'''
+        
+        try:
+            response = model.generate_content(prompt)
+            story = self._parse_response(response.text)
+            story['achievement'] = achievement
+            story['created_at'] = datetime.now().isoformat()
+            
+            self.stories.append(story)
+            self._save_stories()
+            
+            return story
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def get_stories_for_question(self, question: str) -> list:
+        """Find relevant stories for interview question."""
+        relevant = []
+        question_lower = question.lower()
+        
+        for story in self.stories:
+            # Check keywords
+            if any(kw.lower() in question_lower for kw in story.get('keywords', [])):
+                relevant.append(story)
+                continue
+            
+            # Check question types
+            for qt in story.get('question_types', []):
+                if any(word in question_lower for word in qt.lower().split()):
+                    relevant.append(story)
+                    break
+        
+        return relevant[:3]  # Top 3 relevant
+    
+    def _parse_response(self, text: str) -> dict:
+        """Parse JSON from response."""
+        text = text.strip()
+        if text.startswith('```json'):
+            text = text[7:]
+        if text.endswith('```'):
+            text = text[:-3]
+        return json.loads(text.strip())
+
+
+interview_prep = InterviewPrep()
+
+
+## TASK 4: Add scheduled backup
+
+In main.py, add:
+
+from services.backup import backup_manager
+import threading
+import time
+
+def scheduled_backup():
+    while True:
+        time.sleep(24 * 60 * 60)  # Daily
+        backup_manager.backup_database()
+        backup_manager.backup_applications()
+
+# Start backup thread
+backup_thread = threading.Thread(target=scheduled_backup, daemon=True)
+backup_thread.start()
