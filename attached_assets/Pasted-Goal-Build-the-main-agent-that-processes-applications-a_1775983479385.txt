@@ -1,0 +1,309 @@
+Goal
+Build the main agent that processes applications automatically.
+Prompt for Replit AI
+Create the autonomous agent engine for Career-Ops.
+
+## TASK 1: Create services/agent.py
+
+Create new file services/agent.py:
+
+"""
+Career-Ops Autonomous Agent
+Processes job applications automatically
+Only pauses when login is required
+"""
+
+import threading
+import time
+import json
+from datetime import datetime
+from enum import Enum
+
+class TaskStatus(Enum):
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    WAITING_AUTH = "waiting_auth"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+class ApplicationMethod(Enum):
+    EMAIL = "email"
+    GOOGLE_FORM = "google_form"
+    WEB_FORM = "web_form"
+    NAUKRI = "naukri"
+    INDEED = "indeed"
+
+
+class Task:
+    """Single application task."""
+    def __init__(self, app_id, company, role, url, jd_text, method):
+        self.id = app_id
+        self.company = company
+        self.role = role
+        self.url = url
+        self.jd_text = jd_text
+        self.method = method
+        self.status = TaskStatus.QUEUED
+        self.result = None
+        self.error = None
+        self.created_at = datetime.now()
+
+
+class CareerOpsAgent:
+    """Autonomous job application agent."""
+    
+    def __init__(self):
+        self.queue = []
+        self.is_running = False
+        self.current_task = None
+        self.thread = None
+        
+        self.stats = {
+            'processed': 0,
+            'successful': 0,
+            'failed': 0,
+            'waiting_auth': 0
+        }
+    
+    def start(self):
+        """Start the agent."""
+        if self.is_running:
+            return
+        
+        self.is_running = True
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+        print("🤖 Agent started")
+    
+    def stop(self):
+        """Stop the agent."""
+        self.is_running = False
+        print("🤖 Agent stopped")
+    
+    def add_task(self, app_id, company, role, url, jd_text):
+        """Add application to queue."""
+        method = self._detect_method(url, jd_text)
+        
+        # Skip LinkedIn
+        if method == 'linkedin':
+            print(f"⏭️ Skipping LinkedIn job: {company}")
+            return None
+        
+        task = Task(app_id, company, role, url, jd_text, method)
+        self.queue.append(task)
+        print(f"➕ Queued: {company} - {role} ({method})")
+        return task.id
+    
+    def _detect_method(self, url, jd_text):
+        """Detect application method."""
+        url_lower = url.lower() if url else ''
+        jd_lower = jd_text.lower() if jd_text else ''
+        
+        # Email application
+        if '@' in url_lower or 'mailto:' in url_lower:
+            return ApplicationMethod.EMAIL
+        
+        # Check JD for email
+        import re
+        if re.search(r'send.*(cv|resume).*to.*@', jd_lower):
+            return ApplicationMethod.EMAIL
+        if re.search(r'email.*(cv|resume)', jd_lower):
+            return ApplicationMethod.EMAIL
+        
+        # Google Form
+        if 'docs.google.com/forms' in url_lower or 'forms.gle' in url_lower:
+            return ApplicationMethod.GOOGLE_FORM
+        
+        # Portals (excluding LinkedIn)
+        if 'linkedin.com' in url_lower:
+            return 'linkedin'  # Will be skipped
+        if 'naukri.com' in url_lower:
+            return ApplicationMethod.NAUKRI
+        if 'indeed.com' in url_lower:
+            return ApplicationMethod.INDEED
+        
+        # Default to web form
+        return ApplicationMethod.WEB_FORM
+    
+    def _run(self):
+        """Main agent loop."""
+        while self.is_running:
+            # Get next queued task
+            task = self._get_next_task()
+            
+            if not task:
+                time.sleep(3)
+                continue
+            
+            self.current_task = task
+            task.status = TaskStatus.PROCESSING
+            
+            print(f"🔄 Processing: {task.company} - {task.role}")
+            
+            # Process based on method
+            result = self._process_task(task)
+            
+            # Update task
+            if result.get('waiting_auth'):
+                task.status = TaskStatus.WAITING_AUTH
+                self.stats['waiting_auth'] += 1
+                print(f"⏸️ Waiting for auth: {task.company}")
+            elif result.get('success'):
+                task.status = TaskStatus.COMPLETED
+                task.result = result
+                self.stats['successful'] += 1
+                print(f"✅ Applied: {task.company} - {task.role}")
+            else:
+                task.status = TaskStatus.FAILED
+                task.error = result.get('error', 'Unknown error')
+                self.stats['failed'] += 1
+                print(f"❌ Failed: {task.company} - {result.get('error')}")
+            
+            self.stats['processed'] += 1
+            self.current_task = None
+            
+            # Delay between applications
+            time.sleep(5)
+    
+    def _get_next_task(self):
+        """Get next queued task."""
+        for task in self.queue:
+            if task.status == TaskStatus.QUEUED:
+                return task
+        return None
+    
+    def _process_task(self, task):
+        """Process a single task."""
+        from services.gemini_client import evaluate_job, generate_cover_letter
+        from services.email_applicator import email_applicator
+        from services.form_applicator import form_applicator
+        
+        # Get evaluation
+        from models.database import Application
+        app = Application.query.get(task.id)
+        evaluation = json.loads(app.evaluation_json) if app and app.evaluation_json else {}
+        
+        # Route to applicator
+        if task.method == ApplicationMethod.EMAIL:
+            # Generate cover letter
+            cover = generate_cover_letter(task.jd_text, evaluation)
+            if 'error' in cover:
+                return {'success': False, 'error': cover['error']}
+            
+            # Extract email
+            to_email = email_applicator.extract_email_from_jd(task.jd_text)
+            if not to_email:
+                return {'success': False, 'error': 'No email found'}
+            
+            # Send
+            return email_applicator.apply(
+                to_email, task.company, task.role,
+                cover.get('full_text', '')
+            )
+        
+        elif task.method == ApplicationMethod.GOOGLE_FORM:
+            return form_applicator.apply_google_form(task.url)
+        
+        elif task.method == ApplicationMethod.WEB_FORM:
+            return form_applicator.apply_web_form(task.url)
+        
+        elif task.method in [ApplicationMethod.NAUKRI, ApplicationMethod.INDEED]:
+            # Portal - needs login
+            return {
+                'success': False,
+                'waiting_auth': True,
+                'auth_type': 'login',
+                'portal': task.method.value
+            }
+        
+        return {'success': False, 'error': 'Unknown method'}
+    
+    def get_status(self):
+        """Get agent status."""
+        return {
+            'is_running': self.is_running,
+            'current': {
+                'company': self.current_task.company,
+                'role': self.current_task.role
+            } if self.current_task else None,
+            'queue': {
+                'total': len(self.queue),
+                'queued': len([t for t in self.queue if t.status == TaskStatus.QUEUED]),
+                'processing': len([t for t in self.queue if t.status == TaskStatus.PROCESSING]),
+                'waiting_auth': len([t for t in self.queue if t.status == TaskStatus.WAITING_AUTH]),
+                'completed': len([t for t in self.queue if t.status == TaskStatus.COMPLETED]),
+                'failed': len([t for t in self.queue if t.status == TaskStatus.FAILED])
+            },
+            'stats': self.stats,
+            'waiting_auth': [
+                {'id': t.id, 'company': t.company, 'role': t.role, 'portal': t.method.value}
+                for t in self.queue if t.status == TaskStatus.WAITING_AUTH
+            ]
+        }
+    
+    def resume_task(self, task_id):
+        """Resume task after login."""
+        for task in self.queue:
+            if task.id == task_id and task.status == TaskStatus.WAITING_AUTH:
+                task.status = TaskStatus.QUEUED
+                print(f"▶️ Resumed: {task.company}")
+                return True
+        return False
+
+
+# Global agent
+agent = CareerOpsAgent()
+
+
+## TASK 2: Add agent routes to main.py
+
+Add these routes:
+
+@app.route('/agent/start', methods=['POST'])
+def start_agent():
+    from services.agent import agent
+    agent.start()
+    return jsonify({'status': 'started'})
+
+@app.route('/agent/stop', methods=['POST'])
+def stop_agent():
+    from services.agent import agent
+    agent.stop()
+    return jsonify({'status': 'stopped'})
+
+@app.route('/agent/status')
+def agent_status():
+    from services.agent import agent
+    return jsonify(agent.get_status())
+
+@app.route('/agent/queue/<int:app_id>', methods=['POST'])
+def queue_job(app_id):
+    from services.agent import agent
+    from models.database import Application
+    
+    app = Application.query.get(app_id)
+    if not app:
+        return jsonify({'error': 'Not found'}), 404
+    
+    agent.add_task(app.id, app.company, app.role, app.url, app.jd_text)
+    return jsonify({'status': 'queued'})
+
+@app.route('/agent/queue-grade-a', methods=['POST'])
+def queue_all_grade_a():
+    from services.agent import agent
+    from models.database import Application
+    
+    apps = Application.query.filter_by(grade='A', status='Evaluated').all()
+    
+    count = 0
+    for app in apps:
+        agent.add_task(app.id, app.company, app.role, app.url, app.jd_text)
+        count += 1
+    
+    return jsonify({'queued': count})
+
+@app.route('/agent/resume/<int:task_id>', methods=['POST'])
+def resume_task(task_id):
+    from services.agent import agent
+    success = agent.resume_task(task_id)
+    return jsonify({'resumed': success})

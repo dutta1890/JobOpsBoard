@@ -590,6 +590,73 @@ def create_app():
         result = email_applicator.test_connection()
         return jsonify(result)
 
+    @app.route("/agent/start", methods=["POST"])
+    def start_agent():
+        from services.agent import agent
+        agent.start()
+        return jsonify({"status": "started"})
+
+    @app.route("/agent/stop", methods=["POST"])
+    def stop_agent():
+        from services.agent import agent
+        agent.stop()
+        return jsonify({"status": "stopped"})
+
+    @app.route("/agent/status", methods=["GET"])
+    def agent_status():
+        from services.agent import agent
+        return jsonify(agent.get_status())
+
+    @app.route("/agent/queue/<int:app_id>", methods=["POST"])
+    def queue_job(app_id):
+        from services.agent import agent
+
+        app_record = Application.query.get(app_id)
+        if not app_record:
+            return jsonify({"error": "Application not found"}), 404
+
+        task_id = agent.add_task(
+            app_record.id,
+            app_record.company,
+            app_record.role,
+            app_record.url or "",
+            app_record.jd_text or "",
+        )
+
+        if task_id is None:
+            return jsonify({"status": "skipped", "reason": "LinkedIn jobs are not automated"})
+
+        return jsonify({"status": "queued", "task_id": task_id})
+
+    @app.route("/agent/queue-grade-a", methods=["POST"])
+    def queue_all_grade_a():
+        from services.agent import agent
+
+        grade_a_apps = Application.query.filter_by(grade="A", status="Evaluated").all()
+        queued = 0
+        skipped = 0
+
+        for app_record in grade_a_apps:
+            task_id = agent.add_task(
+                app_record.id,
+                app_record.company,
+                app_record.role,
+                app_record.url or "",
+                app_record.jd_text or "",
+            )
+            if task_id is not None:
+                queued += 1
+            else:
+                skipped += 1
+
+        return jsonify({"queued": queued, "skipped_linkedin": skipped})
+
+    @app.route("/agent/resume/<int:task_id>", methods=["POST"])
+    def resume_agent_task(task_id):
+        from services.agent import agent
+        success = agent.resume_task(task_id)
+        return jsonify({"resumed": success})
+
     @app.route("/check-emails", methods=["POST"])
     def check_emails():
         from services.email_tracker import email_tracker
