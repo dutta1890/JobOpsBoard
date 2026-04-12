@@ -36,6 +36,177 @@
     </div>
   </div>
 
+  <!-- ── Agent Control Panel ─────────────────────────────────────────── -->
+  <div class="bg-gray-800 rounded-xl p-5 border border-gray-700">
+    <div class="flex justify-between items-start mb-4">
+      <div>
+        <h3 class="text-lg font-semibold flex items-center gap-2">
+          🤖 AI Agent
+          <span id="agent-badge" class="px-2 py-0.5 text-xs rounded bg-gray-700 text-gray-400">Stopped</span>
+        </h3>
+        <p class="text-gray-400 text-sm mt-0.5">Autonomous job application engine</p>
+      </div>
+      <div class="flex gap-2">
+        <button onclick="startAgent()" id="start-btn"
+          class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded text-sm font-medium transition-colors">
+          ▶ Start
+        </button>
+        <button onclick="stopAgent()" id="stop-btn"
+          class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded text-sm font-medium transition-colors hidden">
+          ⏹ Stop
+        </button>
+      </div>
+    </div>
+
+    <!-- Queue stats -->
+    <div class="grid grid-cols-5 gap-3 mb-4">
+      <div class="bg-gray-700 rounded-lg p-3 text-center">
+        <div id="q-queued" class="text-2xl font-bold text-white">0</div>
+        <div class="text-gray-400 text-xs mt-0.5">Queued</div>
+      </div>
+      <div class="bg-blue-900/60 rounded-lg p-3 text-center">
+        <div id="q-processing" class="text-2xl font-bold text-blue-300">0</div>
+        <div class="text-gray-400 text-xs mt-0.5">Processing</div>
+      </div>
+      <div class="bg-yellow-900/60 rounded-lg p-3 text-center">
+        <div id="q-waiting" class="text-2xl font-bold text-yellow-300">0</div>
+        <div class="text-gray-400 text-xs mt-0.5">Waiting Login</div>
+      </div>
+      <div class="bg-green-900/60 rounded-lg p-3 text-center">
+        <div id="q-done" class="text-2xl font-bold text-green-300">0</div>
+        <div class="text-gray-400 text-xs mt-0.5">Applied</div>
+      </div>
+      <div class="bg-red-900/60 rounded-lg p-3 text-center">
+        <div id="q-failed" class="text-2xl font-bold text-red-300">0</div>
+        <div class="text-gray-400 text-xs mt-0.5">Failed</div>
+      </div>
+    </div>
+
+    <!-- Currently applying to -->
+    <div id="current-task" class="hidden bg-gray-900 rounded-lg p-3 mb-4 border border-gray-700">
+      <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">Now applying to:</div>
+      <div id="current-text" class="text-white text-sm flex items-center gap-2">
+        <span class="animate-pulse text-green-400">●</span>
+        <span></span>
+      </div>
+    </div>
+
+    <!-- Auth waiting section -->
+    <div id="auth-section" class="hidden mb-4">
+      <div class="text-yellow-400 text-sm font-semibold mb-2">🔐 Login Required</div>
+      <div id="auth-list" class="space-y-2"></div>
+    </div>
+
+    <!-- Quick actions -->
+    <div class="flex flex-wrap gap-2 pt-4 border-t border-gray-700">
+      <button onclick="queueGradeA()"
+        class="bg-green-700 hover:bg-green-600 px-4 py-2 rounded text-sm transition-colors">
+        Queue All Grade A
+      </button>
+      <button onclick="queueGradeB()"
+        class="bg-blue-700 hover:bg-blue-600 px-4 py-2 rounded text-sm transition-colors">
+        Queue All Grade B
+      </button>
+    </div>
+  </div>
+
+  <script>
+    function startAgent() {
+      fetch('/agent/start', { method: 'POST' }).then(updateAgentUI);
+    }
+
+    function stopAgent() {
+      fetch('/agent/stop', { method: 'POST' }).then(updateAgentUI);
+    }
+
+    function queueGradeA() {
+      fetch('/agent/queue-grade-a', { method: 'POST' })
+        .then(r => r.json())
+        .then(d => {
+          alert('Queued ' + d.queued + ' Grade A job(s)' + (d.skipped_linkedin ? ', skipped ' + d.skipped_linkedin + ' LinkedIn' : ''));
+          updateAgentUI();
+        });
+    }
+
+    function queueGradeB() {
+      fetch('/agent/queue-grade-b', { method: 'POST' })
+        .then(r => r.json())
+        .then(d => {
+          alert('Queued ' + d.queued + ' Grade B job(s)' + (d.skipped_linkedin ? ', skipped ' + d.skipped_linkedin + ' LinkedIn' : ''));
+          updateAgentUI();
+        });
+    }
+
+    function resumeTask(taskId) {
+      fetch('/agent/resume/' + taskId, { method: 'POST' }).then(updateAgentUI);
+    }
+
+    function updateAgentUI() {
+      fetch('/agent/status')
+        .then(r => r.json())
+        .then(data => {
+          // Badge + buttons
+          const badge = document.getElementById('agent-badge');
+          const startBtn = document.getElementById('start-btn');
+          const stopBtn = document.getElementById('stop-btn');
+          if (data.is_running) {
+            badge.textContent = 'Running';
+            badge.className = 'px-2 py-0.5 text-xs rounded bg-green-900 text-green-300';
+            startBtn.classList.add('hidden');
+            stopBtn.classList.remove('hidden');
+          } else {
+            badge.textContent = 'Stopped';
+            badge.className = 'px-2 py-0.5 text-xs rounded bg-gray-700 text-gray-400';
+            startBtn.classList.remove('hidden');
+            stopBtn.classList.add('hidden');
+          }
+
+          // Stats
+          document.getElementById('q-queued').textContent     = data.queue.queued;
+          document.getElementById('q-processing').textContent = data.queue.processing;
+          document.getElementById('q-waiting').textContent    = data.queue.waiting_auth;
+          document.getElementById('q-done').textContent       = data.stats.successful;
+          document.getElementById('q-failed').textContent     = data.stats.failed;
+
+          // Current task
+          const ct = document.getElementById('current-task');
+          if (data.current) {
+            ct.classList.remove('hidden');
+            document.querySelector('#current-text span:last-child').textContent =
+              data.current.company + ' – ' + data.current.role;
+          } else {
+            ct.classList.add('hidden');
+          }
+
+          // Auth waiting list
+          const authSection = document.getElementById('auth-section');
+          const authList    = document.getElementById('auth-list');
+          if (data.waiting_auth && data.waiting_auth.length > 0) {
+            authSection.classList.remove('hidden');
+            authList.innerHTML = data.waiting_auth.map(t => `
+              <div class="bg-yellow-900/30 border border-yellow-700 rounded-lg p-3 flex justify-between items-center">
+                <div>
+                  <div class="text-white text-sm">${t.company} – ${t.role}</div>
+                  <div class="text-yellow-400 text-xs mt-0.5">Log in to ${t.portal} then click Done</div>
+                </div>
+                <button onclick="resumeTask(${t.id})"
+                  class="bg-green-600 hover:bg-green-500 px-3 py-1 rounded text-xs transition-colors">
+                  Done ✓
+                </button>
+              </div>
+            `).join('');
+          } else {
+            authSection.classList.add('hidden');
+          }
+        })
+        .catch(() => {});
+    }
+
+    // Refresh every 3 seconds while the page is visible
+    setInterval(updateAgentUI, 3000);
+    updateAgentUI();
+  </script>
+
   <!-- Job Evaluation Input -->
   <div class="bg-gray-800 border border-gray-700 rounded-xl p-6">
     <h2 class="text-lg font-semibold mb-1">Evaluate a Job</h2>

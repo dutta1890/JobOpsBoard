@@ -1,0 +1,218 @@
+Goal
+Add agent control panel to dashboard, final testing.
+Prompt for Replit AI
+Add agent control panel and polish Career-Ops.
+
+## TASK 1: Add agent panel to templates/index.html
+
+Add this section at the top of the dashboard (after stats):
+
+<!-- Agent Control Panel -->
+<div class="bg-gray-800 rounded-lg p-4 mb-6 border border-gray-700">
+    <div class="flex justify-between items-center mb-4">
+        <div>
+            <h3 class="text-xl font-semibold flex items-center gap-2">
+                🤖 AI Agent
+                <span id="agent-badge" class="px-2 py-1 text-xs rounded bg-gray-700 text-gray-400">
+                    Stopped
+                </span>
+            </h3>
+            <p class="text-gray-400 text-sm">Autonomous job application engine</p>
+        </div>
+        <div class="flex gap-2">
+            <button onclick="startAgent()" id="start-btn"
+                class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded">
+                ▶ Start
+            </button>
+            <button onclick="stopAgent()" id="stop-btn"
+                class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded hidden">
+                ⏹ Stop
+            </button>
+        </div>
+    </div>
+    
+    <!-- Agent Stats -->
+    <div class="grid grid-cols-5 gap-3 mb-4">
+        <div class="bg-gray-700 rounded p-3 text-center">
+            <div id="q-queued" class="text-2xl font-bold text-white">0</div>
+            <div class="text-gray-400 text-xs">Queued</div>
+        </div>
+        <div class="bg-blue-900 rounded p-3 text-center">
+            <div id="q-processing" class="text-2xl font-bold text-blue-300">0</div>
+            <div class="text-gray-400 text-xs">Processing</div>
+        </div>
+        <div class="bg-yellow-900 rounded p-3 text-center">
+            <div id="q-waiting" class="text-2xl font-bold text-yellow-300">0</div>
+            <div class="text-gray-400 text-xs">Waiting Login</div>
+        </div>
+        <div class="bg-green-900 rounded p-3 text-center">
+            <div id="q-done" class="text-2xl font-bold text-green-300">0</div>
+            <div class="text-gray-400 text-xs">Applied</div>
+        </div>
+        <div class="bg-red-900 rounded p-3 text-center">
+            <div id="q-failed" class="text-2xl font-bold text-red-300">0</div>
+            <div class="text-gray-400 text-xs">Failed</div>
+        </div>
+    </div>
+    
+    <!-- Current Task -->
+    <div id="current-task" class="hidden bg-gray-900 rounded p-3 mb-4">
+        <div class="text-xs text-gray-500">NOW APPLYING TO:</div>
+        <div id="current-text" class="text-white flex items-center gap-2">
+            <span class="animate-pulse">●</span>
+            <span></span>
+        </div>
+    </div>
+    
+    <!-- Waiting for Auth -->
+    <div id="auth-section" class="hidden">
+        <div class="text-yellow-400 font-semibold mb-2">🔐 LOGIN REQUIRED</div>
+        <div id="auth-list" class="space-y-2"></div>
+    </div>
+    
+    <!-- Quick Actions -->
+    <div class="flex gap-2 pt-4 border-t border-gray-700">
+        <button onclick="queueGradeA()"
+            class="bg-green-700 hover:bg-green-600 px-4 py-2 rounded text-sm">
+            Queue All Grade A
+        </button>
+        <button onclick="queueGradeB()"
+            class="bg-blue-700 hover:bg-blue-600 px-4 py-2 rounded text-sm">
+            Queue All Grade B
+        </button>
+    </div>
+</div>
+
+<script>
+function startAgent() {
+    fetch('/agent/start', {method: 'POST'}).then(updateAgentUI);
+}
+
+function stopAgent() {
+    fetch('/agent/stop', {method: 'POST'}).then(updateAgentUI);
+}
+
+function queueGradeA() {
+    fetch('/agent/queue-grade-a', {method: 'POST'})
+        .then(r => r.json())
+        .then(d => {
+            alert('Queued ' + d.queued + ' Grade A jobs');
+            updateAgentUI();
+        });
+}
+
+function queueGradeB() {
+    fetch('/agent/queue-grade-b', {method: 'POST'})
+        .then(r => r.json())
+        .then(d => {
+            alert('Queued ' + d.queued + ' Grade B jobs');
+            updateAgentUI();
+        });
+}
+
+function resumeTask(taskId) {
+    fetch('/agent/resume/' + taskId, {method: 'POST'}).then(updateAgentUI);
+}
+
+function updateAgentUI() {
+    fetch('/agent/status')
+        .then(r => r.json())
+        .then(data => {
+            // Badge
+            const badge = document.getElementById('agent-badge');
+            if (data.is_running) {
+                badge.textContent = 'Running';
+                badge.className = 'px-2 py-1 text-xs rounded bg-green-900 text-green-300';
+                document.getElementById('start-btn').classList.add('hidden');
+                document.getElementById('stop-btn').classList.remove('hidden');
+            } else {
+                badge.textContent = 'Stopped';
+                badge.className = 'px-2 py-1 text-xs rounded bg-gray-700 text-gray-400';
+                document.getElementById('start-btn').classList.remove('hidden');
+                document.getElementById('stop-btn').classList.add('hidden');
+            }
+            
+            // Stats
+            document.getElementById('q-queued').textContent = data.queue.queued;
+            document.getElementById('q-processing').textContent = data.queue.processing;
+            document.getElementById('q-waiting').textContent = data.queue.waiting_auth;
+            document.getElementById('q-done').textContent = data.stats.successful;
+            document.getElementById('q-failed').textContent = data.stats.failed;
+            
+            // Current task
+            const ct = document.getElementById('current-task');
+            if (data.current) {
+                ct.classList.remove('hidden');
+                document.querySelector('#current-text span:last-child').textContent = 
+                    data.current.company + ' - ' + data.current.role;
+            } else {
+                ct.classList.add('hidden');
+            }
+            
+            // Auth waiting
+            const authSection = document.getElementById('auth-section');
+            const authList = document.getElementById('auth-list');
+            if (data.waiting_auth && data.waiting_auth.length > 0) {
+                authSection.classList.remove('hidden');
+                authList.innerHTML = data.waiting_auth.map(t => `
+                    <div class="bg-yellow-900/30 border border-yellow-700 rounded p-3 flex justify-between items-center">
+                        <div>
+                            <div class="text-white">${t.company} - ${t.role}</div>
+                            <div class="text-yellow-400 text-xs">Login to ${t.portal}</div>
+                        </div>
+                        <button onclick="resumeTask(${t.id})"
+                            class="bg-green-600 px-3 py-1 rounded text-xs">
+                            Done ✓
+                        </button>
+                    </div>
+                `).join('');
+            } else {
+                authSection.classList.add('hidden');
+            }
+        });
+}
+
+// Auto-refresh every 3 seconds
+setInterval(updateAgentUI, 3000);
+updateAgentUI();
+</script>
+
+
+## TASK 2: Add queue-grade-b route
+
+Add to main.py:
+
+@app.route('/agent/queue-grade-b', methods=['POST'])
+def queue_all_grade_b():
+    from services.agent import agent
+    from models.database import Application
+    
+    apps = Application.query.filter_by(grade='B', status='Evaluated').all()
+    
+    count = 0
+    for app in apps:
+        agent.add_task(app.id, app.company, app.role, app.url, app.jd_text)
+        count += 1
+    
+    return jsonify({'queued': count})
+
+
+## TASK 3: Final testing checklist
+
+Test each feature:
+
+1. [ ] Evaluate a job URL → Check filters applied
+2. [ ] Evaluate job <3 days old → See "high priority" badge
+3. [ ] Evaluate job 7+ days old → See "skipped" message
+4. [ ] Evaluate junior role → See "skipped" message
+5. [ ] Generate CV → Check output
+6. [ ] Generate cover letter → Check output
+7. [ ] Test email connection → Should succeed
+8. [ ] Start agent → Status changes to "Running"
+9. [ ] Queue Grade A jobs → Count shown
+10. [ ] Agent processes email job → Auto-sends email
+11. [ ] Agent processes form job → Auto-fills and submits
+12. [ ] Agent hits portal job → Pauses, shows login needed
+13. [ ] Click "Done" after login → Agent resumes
+14. [ ] Check email replies → Shows any replies found
+15. [ ] Stop agent → Status changes to "Stopped"

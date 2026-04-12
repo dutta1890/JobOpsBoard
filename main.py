@@ -657,6 +657,29 @@ def create_app():
         success = agent.resume_task(task_id)
         return jsonify({"resumed": success})
 
+    @app.route("/agent/queue-grade-b", methods=["POST"])
+    def queue_all_grade_b():
+        from services.agent import agent
+
+        grade_b_apps = Application.query.filter_by(grade="B", status="Evaluated").all()
+        queued = 0
+        skipped = 0
+
+        for app_record in grade_b_apps:
+            task_id = agent.add_task(
+                app_record.id,
+                app_record.company,
+                app_record.role,
+                app_record.url or "",
+                app_record.jd_text or "",
+            )
+            if task_id is not None:
+                queued += 1
+            else:
+                skipped += 1
+
+        return jsonify({"queued": queued, "skipped_linkedin": skipped})
+
     @app.route("/check-emails", methods=["POST"])
     def check_emails():
         from services.email_tracker import email_tracker
