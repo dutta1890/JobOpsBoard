@@ -3,7 +3,7 @@ import logging
 import os
 from datetime import datetime, date
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 from models.database import (
     db,
     Application,
@@ -138,8 +138,16 @@ def render_error(message: str) -> str:
 
 
 def create_app():
+    from services.security import (
+        SECRET_KEY, DASHBOARD_PASSWORD,
+        login_required, rate_limit as security_rate_limit,
+        sanitize_input, sanitize_url,
+        add_security_headers,
+    )
+
     app = Flask(__name__)
     app.config.from_object(Config)
+    app.secret_key = SECRET_KEY
 
     db.init_app(app)
 
@@ -147,7 +155,62 @@ def create_app():
         db.create_all()
         logger.info("Database tables created/verified.")
 
+    @app.after_request
+    def after_request(response):
+        return add_security_headers(response)
+
+    # ── Login / logout ─────────────────────────────────────────────────────────
+
+    @app.route("/login", methods=["GET", "POST"])
+    @security_rate_limit
+    def login():
+        if request.method == "POST":
+            password = request.form.get("password", "")
+            if password and password == DASHBOARD_PASSWORD:
+                session["authenticated"] = True
+                session["login_time"] = datetime.now().isoformat()
+                return redirect(url_for("index"))
+            return """
+            <html><head><title>Career-Ops</title>
+            <style>body{background:#1a1a2e;color:#fff;font-family:sans-serif;
+            display:flex;justify-content:center;align-items:center;height:100vh;margin:0}
+            .box{background:#16213e;padding:40px;border-radius:10px;text-align:center}
+            a{color:#4caf50}</style></head>
+            <body><div class="box"><h2>&#10060; Wrong password</h2>
+            <a href="/login">Try again</a></div></body></html>
+            """, 401
+
+        return """
+        <!DOCTYPE html><html>
+        <head><title>Career-Ops Login</title>
+        <style>
+          body{background:#1a1a2e;color:#fff;font-family:sans-serif;
+               display:flex;justify-content:center;align-items:center;height:100vh;margin:0}
+          .box{background:#16213e;padding:40px;border-radius:10px;text-align:center;
+               min-width:280px;box-shadow:0 4px 24px #0008}
+          h2{margin-top:0}
+          input{padding:12px;margin:10px 0;border:1px solid #333;border-radius:5px;
+                background:#0f3460;color:#fff;width:200px;font-size:16px;box-sizing:border-box}
+          button{background:#4caf50;color:#fff;padding:12px 30px;border:none;
+                 border-radius:5px;cursor:pointer;font-size:16px;width:100%;margin-top:8px}
+          button:hover{background:#45a049}
+        </style></head>
+        <body><div class="box">
+          <h2>&#128274; Career-Ops</h2>
+          <form method="POST">
+            <input type="password" name="password" placeholder="Password" required autofocus><br>
+            <button type="submit">Login</button>
+          </form>
+        </div></body></html>
+        """
+
+    @app.route("/logout")
+    def logout():
+        session.clear()
+        return redirect(url_for("login"))
+
     @app.route("/")
+    @login_required
     def index():
         applications = Application.query.order_by(
             Application.created_at.desc()
