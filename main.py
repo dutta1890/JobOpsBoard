@@ -144,6 +144,7 @@ def create_app():
         sanitize_input, sanitize_url,
         add_security_headers,
     )
+    from services.audit_logger import audit_logger
 
     app = Flask(__name__)
     app.config.from_object(Config)
@@ -169,7 +170,9 @@ def create_app():
             if password and password == DASHBOARD_PASSWORD:
                 session["authenticated"] = True
                 session["login_time"] = datetime.now().isoformat()
+                audit_logger.log_login(success=True, ip=request.remote_addr)
                 return redirect(url_for("index"))
+            audit_logger.log_login(success=False, ip=request.remote_addr)
             return """
             <html><head><title>Career-Ops</title>
             <style>body{background:#1a1a2e;color:#fff;font-family:sans-serif;
@@ -482,6 +485,7 @@ def create_app():
                     ))
 
             db.session.commit()
+            audit_logger.log_evaluation(url=url or "", grade=grade, company=company)
             return jsonify({"success": True, "id": application.id})
 
         except Exception as e:
@@ -694,6 +698,17 @@ def create_app():
                 app_record.status = "Applied"
                 app_record.applied_date = datetime.utcnow()
                 db.session.commit()
+                audit_logger.log_application(
+                    company=app_record.company,
+                    method="EMAIL",
+                    success=True,
+                )
+            else:
+                audit_logger.log_application(
+                    company=app_record.company,
+                    method="EMAIL",
+                    success=False,
+                )
 
             return jsonify(result)
 
@@ -872,6 +887,11 @@ def create_app():
                     app_record.status = "Applied"
                     app_record.applied_date = datetime.utcnow()
                     db.session.commit()
+                    audit_logger.log_application(
+                        company=app_record.company,
+                        method=form_type.upper(),
+                        success=True,
+                    )
 
             return jsonify(result)
 
@@ -896,6 +916,36 @@ def create_app():
         if not profile:
             return jsonify({"error": "Profile not found"}), 404
         return jsonify(profile)
+
+    # ── Interview Prep ─────────────────────────────────────────────────────────
+
+    @app.route("/api/interview/stories", methods=["GET"])
+    @login_required
+    def get_interview_stories():
+        """Return all saved STAR stories."""
+        from services.interview_prep import interview_prep
+        question = request.args.get("q", "").strip()
+        if question:
+            stories = interview_prep.get_stories_for_question(question)
+        else:
+            stories = interview_prep.get_all_stories()
+        return jsonify({"success": True, "stories": stories, "count": len(stories)})
+
+    @app.route("/api/interview/generate", methods=["POST"])
+    @login_required
+    def generate_star_story():
+        """Generate a new STAR+R story from an achievement and question type."""
+        from services.interview_prep import interview_prep
+        body = request.get_json(silent=True) or {}
+        achievement = (body.get("achievement") or "").strip()
+        question_type = (body.get("question_type") or "Tell me about a time you...").strip()
+        if not achievement:
+            return jsonify({"success": False, "error": "Achievement text is required."}), 400
+        story = interview_prep.generate_star_story(achievement, question_type)
+        if "error" in story:
+            return jsonify({"success": False, "error": story["error"]}), 500
+        audit_logger.log_agent_action("star_story_generated", achievement[:80])
+        return jsonify({"success": True, "story": story})
 
     @app.route("/api/health")
     def health():
