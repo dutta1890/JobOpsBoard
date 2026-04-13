@@ -1026,6 +1026,34 @@ def create_app():
             headers={"Content-Disposition": "attachment; filename=career_ops_applications.csv"},
         )
 
+    # ── Job Scanner routes ──────────────────────────────────────────────────
+
+    @app.route("/scanner/start", methods=["POST"])
+    @login_required
+    def scanner_start():
+        from services.job_scanner import job_scanner
+        body = request.get_json(silent=True) or {}
+        single = body.get("single_pass", False)
+        if single:
+            result = job_scanner.run_once(app)
+        else:
+            result = job_scanner.start(app)
+        return jsonify(result)
+
+    @app.route("/scanner/stop", methods=["POST"])
+    @login_required
+    def scanner_stop():
+        from services.job_scanner import job_scanner
+        return jsonify(job_scanner.stop())
+
+    @app.route("/scanner/status")
+    @login_required
+    def scanner_status():
+        from services.job_scanner import job_scanner
+        return jsonify(job_scanner.get_status())
+
+    # ── Activity log ────────────────────────────────────────────────────────
+
     @app.route("/api/activity")
     @login_required
     def activity_log():
