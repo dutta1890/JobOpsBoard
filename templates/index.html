@@ -268,8 +268,8 @@
         .catch(() => {});
     }
 
-    // Refresh every 3 seconds while the page is visible
-    setInterval(updateAgentUI, 3000);
+    // Poll agent status every 6 seconds
+    setInterval(updateAgentUI, 6000);
     updateAgentUI();
   </script>
 
@@ -514,7 +514,7 @@
         }).catch(() => {});
     }
 
-    setInterval(updateScannerUI, 4000);
+    setInterval(updateScannerUI, 8000);
     updateScannerUI();
   </script>
 
@@ -596,7 +596,7 @@
     }
 
     refreshFoundJobs();
-    setInterval(refreshFoundJobs, 10000);
+    setInterval(refreshFoundJobs, 30000);
   </script>
 
   <!-- Activity Log -->
@@ -663,7 +663,7 @@
     }
 
     refreshActivity();
-    setInterval(refreshActivity, 15000);
+    setInterval(refreshActivity, 90000);
   </script>
 
   <!-- Applications Tracker -->

@@ -47,6 +47,9 @@ def _decode_header_value(raw) -> str:
         return str(raw or "")
 
 
+_CACHE_TTL = 300  # seconds — only hit IMAP once every 5 minutes
+
+
 class EmailTracker:
     """Scan Gmail inbox for job application replies."""
 
@@ -54,6 +57,9 @@ class EmailTracker:
         self.imap_server = os.environ.get("IMAP_SERVER", "imap.gmail.com")
         self.email_address = os.environ.get("EMAIL_ADDRESS", "")
         self.email_password = os.environ.get("EMAIL_APP_PASSWORD", "")
+        self._cache: list[dict] | dict | None = None
+        self._cache_expires: datetime | None = None
+        self._cache_days: int | None = None
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -68,6 +74,15 @@ class EmailTracker:
         """
         if not self.email_address or not self.email_password:
             return {"error": "Email credentials not configured."}
+
+        now = datetime.now()
+        if (
+            self._cache is not None
+            and self._cache_expires is not None
+            and self._cache_days == days
+            and now < self._cache_expires
+        ):
+            return self._cache
 
         replies = []
 
@@ -124,6 +139,9 @@ class EmailTracker:
 
             mail.logout()
             logger.info(f"Email check: found {len(replies)} job-related replies")
+            self._cache = replies
+            self._cache_expires = datetime.now() + timedelta(seconds=_CACHE_TTL)
+            self._cache_days = days
             return replies
 
         except imaplib.IMAP4.error as imap_err:
