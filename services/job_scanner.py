@@ -1,13 +1,23 @@
 """
-job_scanner.py — Brutally filtered, multi-layered autonomous job crawler.
+job_scanner.py — Brutally layered, frugal job crawler for Career-Ops.
 
-Every discovered URL must pass SIX sequential hard filter layers before
-a single Gemini API call is made.  Only Grade A/B jobs that explicitly
-mention the target city (or remote/hybrid) in the JD text are saved.
+Filter order (no network/AI wasted on failed layers):
+  PRE-0  Empty page / no JD content
+  PRE-1  Min text length + job-page structure
+  L0     Seniority gate  (BOTH directions: too-junior AND too-senior)
+  L1a    PM keyword density  (≥2 groups, ≥3 hits)
+  L1b    User keyword cross-check  (at least 1 of scanner_settings.search_keywords)
+  L2     Location hard gate  (city in text OR remote/hybrid — no exceptions)
+  L3     Role title function check  (non-PM job function → skip)
+  ──── Gemini called only if all above pass ────────────────────────────────
+  L4     Gemini full evaluation (age, scam, legitimacy, 10-dimension score)
+  L5     Grade gate: A or B only
+  L6     Post-AI location sanity check
 
-Dynamic source discovery supplements the static company list by running
-DuckDuckGo searches and scraping job-board search pages in real time.
+Dynamic discovery: Google Search HTML scraping (no API key required).
 """
+
+from __future__ import annotations
 
 import json
 import logging
@@ -15,10 +25,10 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
-from urllib.parse import urljoin, urlparse, quote, parse_qs, urlencode
+from urllib.parse import urljoin, urlparse, quote, unquote
 
 import requests
 from bs4 import BeautifulSoup
@@ -26,12 +36,11 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger(__name__)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
-BASE        = os.path.dirname(__file__)
-PROFILE_PATH  = os.path.join(BASE, "..", "data", "profile.json")
+BASE          = os.path.dirname(__file__)
 SOURCES_PATH  = os.path.join(BASE, "..", "data", "job_sources.json")
 SETTINGS_PATH = os.path.join(BASE, "..", "data", "scanner_settings.json")
 
-# ── HTTP ────────────────────────────────────────────────────────────────────────
+# ── HTTP ───────────────────────────────────────────────────────────────────────
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -40,27 +49,29 @@ HEADERS = {
     ),
     "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
     "Connection":      "keep-alive",
     "DNT":             "1",
 }
 REQUEST_TIMEOUT      = 18
-DELAY_BETWEEN_PAGES  = 2.0
-MAX_JOBS_PER_SOURCE  = 6
-SCAN_INTERVAL_HOURS  = 3
+DELAY_BETWEEN_PAGES  = 2.5   # seconds between individual page fetches
+MAX_JOBS_PER_SOURCE  = 6     # max individual job pages to evaluate per source
+SCAN_INTERVAL_HOURS  = 3     # hours between continuous-mode passes
 
-# ── URLs to skip as sources ────────────────────────────────────────────────────
+# Minimum characters for a page to be considered a real job description
+MIN_JD_LENGTH = 350
+
+# ── Domains to skip as crawl sources ──────────────────────────────────────────
 SKIP_SOURCE_DOMAINS = {
     "linkedin.com", "naukri.com", "indeed.com", "glassdoor.com",
-    "monster.com", "shine.com", "twitter.com", "facebook.com",
+    "monster.com", "shine.com", "twitter.com", "x.com", "facebook.com",
     "instagram.com", "youtube.com", "t.me", "telegram.org",
 }
 
-# ── Links to never follow ──────────────────────────────────────────────────────
+# ── Link patterns to never follow ─────────────────────────────────────────────
 SKIP_LINK_RE = re.compile(
     r"(linkedin\.com|twitter\.com|x\.com|facebook\.com|instagram\.com|"
-    r"youtube\.com|whatsapp|mailto:|tel:|javascript:|^#|"
-    r"google\.com/maps|maps\.app|\.pdf$|\.zip$|\.png$|\.jpg$|\.jpeg$|"
+    r"youtube\.com|whatsapp|mailto:|tel:|javascript:|^#|google\.com/maps|"
+    r"maps\.app|\.pdf$|\.zip$|\.png$|\.jpg$|\.jpeg$|\.gif$|"
     r"/logout|/login|/signin|/signup|/register|/privacy|/terms|"
     r"/cookie|/about$|/contact$|/blog/|/news/|/press/|/team$|"
     r"support\.|help\.|status\.)",
@@ -75,78 +86,119 @@ JOB_URL_RE = re.compile(
     r"myworkdayjobs\.com/|smartrecruiters\.com/|breezy\.hr/|"
     r"ashbyhq\.com/|jobs\.ashby\.com/|apply\.workable\.com/|"
     r"taleo\.net/|icims\.com/|bamboohr\.com/careers/|"
-    r"hire\.trakstar\.com/|recruit\.zoho\.com/|"
-    r"instahyre\.com/job/|cutshort\.io/job|wellfound\.com/jobs/|"
-    r"/careers/[a-z0-9_-]{4,}$)",
+    r"recruit\.zoho\.com/|instahyre\.com/job/|cutshort\.io/job|"
+    r"wellfound\.com/jobs/|/careers/[a-z0-9_-]{4,}$)",
     re.IGNORECASE,
 )
 
-# ═════════════════════════════════════════════════════════════════════════════
-# LAYER DEFINITIONS — each returns True = SKIP, False = PASS
-# ═════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+#  LAYER DEFINITIONS  — each returns True = SKIP
+# ══════════════════════════════════════════════════════════════════════════════
 
-# ── Layer 0 — Seniority exclusion (URL/anchor, no fetch required) ──────────────
-_JUNIOR_RE = re.compile(
-    r"\b(intern(ship)?|trainee|fresher|junior|jr\.?|entry[- ]level|"
-    r"associate[- ]level|graduate[- ]traineeship|apprentice|"
-    r"0[- ]?[–-][- ]?2\s*years?)\b",
+# ── PRE-0 / PRE-1 : Empty / thin JD ──────────────────────────────────────────
+
+# Structural job-page signals (at least one must be present after text extraction)
+_JD_STRUCTURE_RE = re.compile(
+    r"(responsibilit|requirement[s]?|qualif|experience|skill[s]?|"
+    r"role|position|duties|what you.ll do|what we.re looking|"
+    r"about the role|job description|key responsibilities|"
+    r"you will be|we are looking)",
     re.IGNORECASE,
 )
 
-def _layer0_junior(text: str) -> bool:
-    """Return True (SKIP) if text signals a junior/intern role."""
-    return bool(_JUNIOR_RE.search(text))
+def _pre_empty(text: str) -> bool:
+    """Return True (SKIP) if the page contains no usable job description."""
+    if len(text) < MIN_JD_LENGTH:
+        return True
+    if not _JD_STRUCTURE_RE.search(text):
+        return True
+    return False
 
 
-# ── Layer 1 — PM keyword density (applied to job page full text) ──────────────
+# ── L0 : Seniority gate (bi-directional) ─────────────────────────────────────
 #
-# Jobs must show evidence of being a PERFORMANCE / PAID MEDIA role.
-# Each group below represents a distinct concept; the page must hit
-# at least MIN_PM_GROUPS different groups, with ≥ MIN_PM_HITS total.
+#  ACCEPT  →  Manager · Senior Manager · Lead · Senior · Sr.
+#  SKIP    →  too-junior: Intern / Junior / Jr / Entry-Level / Fresher / Trainee / Graduate
+#  SKIP    →  too-senior: Head · Director · VP · Vice President · Chief · Executive · President / C-level
+
+_TOO_JUNIOR_RE = re.compile(
+    r"\b(intern(ship)?|trainee|fresher|junior|jr\.?|"
+    r"entry[- ]level|entry[- ]grade|graduate[- ]traineeship|"
+    r"apprentice|0[- ]?[–-][- ]?[12]\s*years?|"
+    r"less\s+than\s+[12]\s+years?)\b",
+    re.IGNORECASE,
+)
+
+_TOO_SENIOR_RE = re.compile(
+    r"\b(head\s+of|head,|vp\b|vice\s+president|chief\s+\w+\s+officer|"
+    r"\bcmo\b|\bcco\b|\bceo\b|\bcto\b|executive\s+director|"
+    r"president\s+of|\bpresident\b|global\s+head|country\s+head|"
+    r"group\s+director|group\s+head|managing\s+director)\b",
+    re.IGNORECASE,
+)
+
+def _l0_seniority(title: str, text_snippet: str = "") -> str | None:
+    """
+    Return skip reason string if seniority is out of range, else None.
+    Checks both the job title and the first 500 chars of text.
+    """
+    combined = (title + " " + text_snippet[:500])
+    if _TOO_JUNIOR_RE.search(title):          # title is the strongest signal
+        return "too-junior title"
+    if _TOO_SENIOR_RE.search(title):          # title is the strongest signal
+        return "too-senior title"
+    if _TOO_JUNIOR_RE.search(combined):
+        return "too-junior content"
+    return None
+
+
+# ── L1a : PM keyword density ──────────────────────────────────────────────────
 #
-_PM_GROUPS = [
-    # Group 0 — role name
+# Job text must hit ≥ MIN_PM_GROUPS distinct groups and ≥ MIN_PM_HITS total.
+_PM_GROUPS: list[re.Pattern] = [
+    # Group 0 — role-name terms
     re.compile(
-        r"(performance\s+marketing|paid\s+media|media\s+manager|"
-        r"media\s+lead|biddable\s+media|programmatic|performance\s+lead|"
-        r"digital\s+performance|growth\s+marketing|demand\s+gen)",
+        r"(performance\s+marketing|paid\s+media|media\s+manag|media\s+lead|"
+        r"biddable\s+media|programmatic|performance\s+lead|digital\s+performance|"
+        r"growth\s+marketing|demand\s+gen(eration)?)",
         re.IGNORECASE,
     ),
     # Group 1 — paid search / PPC
     re.compile(
-        r"(ppc|sem|paid\s+search|google\s+ads|search\s+ads|"
-        r"adwords|search\s+campaigns?|keyword\s+bid)",
+        r"(\bppc\b|sem\b|paid\s+search|google\s+ads|search\s+ads|"
+        r"adwords|keyword\s+bid)",
         re.IGNORECASE,
     ),
     # Group 2 — paid social
     re.compile(
         r"(meta\s+ads|facebook\s+ads|instagram\s+ads|paid\s+social|"
-        r"social\s+advertising|tiktok\s+ads|linkedin\s+ads)",
+        r"social\s+advertising|tiktok\s+ads)",
         re.IGNORECASE,
     ),
-    # Group 3 — channels / tools
+    # Group 3 — tools / channels
     re.compile(
-        r"(youtube\s+ads|display\s+advertising|dv360|campaign\s+manager|"
-        r"dsp|rtb|programmatic\s+buying|trade\s+desk)",
+        r"(youtube\s+ads|display\s+adv|dv360|campaign\s+manager|"
+        r"\bdsp\b|\brtb\b|trade\s+desk|programmatic\s+buying)",
         re.IGNORECASE,
     ),
-    # Group 4 — performance metrics / KPIs
+    # Group 4 — KPIs / performance metrics
     re.compile(
-        r"(roas|cpa|cpl|cpc|ctr|roi|cost\s+per\s+acquisition|"
-        r"return\s+on\s+ad\s+spend|conversion\s+rate|funnel)",
+        r"(\broas\b|\bcpa\b|\bcpl\b|\bcpc\b|\bctr\b|\broi\b|"
+        r"cost\s+per\s+acquisition|return\s+on\s+ad\s+spend|"
+        r"conversion\s+rate|funnel\s+optimis)",
         re.IGNORECASE,
     ),
     # Group 5 — analytics
     re.compile(
-        r"(google\s+analytics|ga4|data\s+studio|looker|attribution|"
-        r"a/b\s+test|split\s+test|pixel|tracking)",
+        r"(google\s+analytics|\bga4\b|data\s+studio|looker|attribution|"
+        r"a/b\s+test|split\s+test|\bpixel\b|tracking\s+setup)",
         re.IGNORECASE,
     ),
 ]
-MIN_PM_GROUPS = 2    # must match at least 2 distinct groups
-MIN_PM_HITS   = 3    # must have ≥3 total keyword occurrences
+MIN_PM_GROUPS = 2
+MIN_PM_HITS   = 3
 
-def _layer1_pm_density(text: str) -> bool:
+def _l1a_pm_density(text: str) -> bool:
     """Return True (SKIP) if PM keyword density is too low."""
     groups_hit = 0
     total_hits = 0
@@ -158,82 +210,72 @@ def _layer1_pm_density(text: str) -> bool:
     return groups_hit < MIN_PM_GROUPS or total_hits < MIN_PM_HITS
 
 
-# ── Layer 2 — Location hard check ─────────────────────────────────────────────
+# ── L1b : User keyword cross-check ───────────────────────────────────────────
+
+def _l1b_user_keywords(text: str, user_keywords: list[str]) -> bool:
+    """
+    Return True (SKIP) if NONE of the user's search_keywords appear in the JD.
+    Case-insensitive substring match.
+    """
+    if not user_keywords:
+        return False  # no filter configured
+    text_lower = text.lower()
+    for kw in user_keywords:
+        if kw.strip().lower() in text_lower:
+            return False
+    return True  # none matched → skip
+
+
+# ── L2 : Location hard gate ───────────────────────────────────────────────────
+
 _REMOTE_RE = re.compile(
     r"\b(remote|hybrid|work\s+from\s+home|wfh|flexible\s+location|"
-    r"location\s+agnostic|anywhere)\b",
+    r"location\s+agnostic|open\s+to\s+remote|pan[- ]india)\b",
     re.IGNORECASE,
 )
 
-def _layer2_location(text: str, city: str) -> bool:
-    """Return True (SKIP) if the target city is absent and it's not remote/hybrid."""
+def _l2_location(text: str, city: str) -> bool:
+    """
+    Return True (SKIP) if target city is absent AND it's not remote/hybrid.
+    City must appear explicitly in JD text — no exceptions.
+    """
     if not city:
-        return False  # no filter configured
-    city_re = re.compile(re.escape(city), re.IGNORECASE)
-    if city_re.search(text):
-        return False  # city found
+        return False
+    if re.search(re.escape(city), text, re.IGNORECASE):
+        return False
     if _REMOTE_RE.search(text):
-        return False  # remote/hybrid is acceptable
-    return True  # SKIP — wrong location
+        return False
+    return True  # SKIP — wrong region
 
 
-# ── Layer 3 — Role title PM relevance ─────────────────────────────────────────
-#
-# Roles that should NEVER be accepted even if the page has PM words
-# (e.g., an engineer on a marketing team)
-_NON_PM_ROLE_RE = re.compile(
-    r"\b(software\s+engineer|backend|frontend|full[- ]stack|devops|"
+# ── L3 : Role title function check ───────────────────────────────────────────
+
+_NON_PM_FUNCTION_RE = re.compile(
+    r"\b(software\s+engineer|backend|frontend|full[- ]?stack|devops|"
     r"data\s+engineer|data\s+analyst|data\s+scientist|"
     r"product\s+manager|product\s+owner|program\s+manager|"
-    r"finance|accounting|accountant|hr\s+manager|human\s+resources|"
-    r"recruiter|talent\s+acquisition|graphic\s+design|"
-    r"content\s+writer|copywriter|seo\s+specialist|"
-    r"social\s+media\s+manager|community\s+manager|"
-    r"ui\s+designer|ux\s+designer|video\s+editor|"
+    r"finance\s+manager|accounting|accountant|"
+    r"hr\s+manager|human\s+resources|recruiter|talent\s+acquisition|"
+    r"graphic\s+design(er)?|content\s+writer|copywriter|"
+    r"seo\s+specialist|social\s+media\s+manager|community\s+manager|"
+    r"ui\s+(designer|developer)|ux\s+designer|video\s+editor|"
     r"business\s+development|sales\s+manager|account\s+manager|"
-    r"customer\s+success|operations\s+manager)\b",
-    re.IGNORECASE,
-)
-# Positive signal — title must include at least one of these
-_PM_TITLE_RE = re.compile(
-    r"(performance\s+market|paid\s+media|media\s+manag|media\s+lead|"
-    r"digital\s+market|growth\s+market|demand\s+gen|biddable|"
-    r"ppc\s+manag|sem\s+manag|performance\s+lead)",
+    r"customer\s+success|operations\s+manager|project\s+manager)\b",
     re.IGNORECASE,
 )
 
-def _layer3_role_title(title: str) -> bool:
-    """Return True (SKIP) if the job title is clearly non-PM or lacks PM signal."""
+def _l3_role_title(title: str) -> bool:
+    """Return True (SKIP) if title is clearly a non-PM job function."""
     if not title:
-        return False  # can't judge — let AI decide
-    if _NON_PM_ROLE_RE.search(title):
-        return True  # clearly wrong function
-    # If the title has PM signal — keep; otherwise trust the text (neutral)
-    return False
+        return False
+    return bool(_NON_PM_FUNCTION_RE.search(title))
 
 
-# ── Layer 4 — Seniority gate (from page text + title) ─────────────────────────
-_SENIORITY_OK_RE = re.compile(
-    r"\b(senior|sr\.?|lead|manager|head|director|vp|vice\s+president|"
-    r"principal|associate\s+director|associate\s+manager)\b",
-    re.IGNORECASE,
-)
-
-def _layer4_seniority(title: str, text: str) -> bool:
-    """Return True (SKIP) if seniority signals are absent."""
-    combined = (title + " " + text[:2000])
-    if _layer0_junior(combined):
-        return True
-    # We require at least one mid-senior indicator in the title or opening copy
-    return not bool(_SENIORITY_OK_RE.search(title))
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# HELPERS
-# ═════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+#  PAGE UTILITIES
+# ══════════════════════════════════════════════════════════════════════════════
 
 def _extract_title(soup: BeautifulSoup) -> str:
-    """Try multiple selectors to pull the job title."""
     for sel in (
         "h1.job-title", "h1[class*='title']", "h1[class*='job']",
         "h1[class*='position']", "h1[class*='role']",
@@ -243,133 +285,168 @@ def _extract_title(soup: BeautifulSoup) -> str:
         tag = soup.select_one(sel)
         if tag:
             txt = tag.get_text(separator=" ", strip=True)
-            if 3 < len(txt) < 120:
+            if 3 < len(txt) < 130:
                 return txt
-    # Fallback: <title> minus the company name
-    title_tag = soup.find("title")
-    if title_tag:
+    if (title_tag := soup.find("title")):
         raw = title_tag.get_text(" ", strip=True)
-        # Drop content after | or – or — (usually company name)
-        return re.split(r"[|–—]", raw)[0].strip()[:120]
+        return re.split(r"[|–—]", raw)[0].strip()[:130]
     return ""
 
 
-def _fetch_text(url: str) -> tuple[str, BeautifulSoup | None]:
-    """Fetch page, return (cleaned_text, soup). Returns ('','') on failure."""
+def _fetch_page(url: str) -> tuple[str, Optional[BeautifulSoup]]:
+    """Fetch page, strip boilerplate, return (plain_text, soup)."""
     try:
         resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=True)
-        if resp.status_code not in (200,):
+        if resp.status_code != 200:
             return "", None
         soup = BeautifulSoup(resp.text, "html.parser")
-        for tag in soup(["script", "style", "nav", "footer", "header", "noscript"]):
+        for tag in soup(["script", "style", "nav", "footer", "header", "noscript", "meta"]):
             tag.decompose()
         return soup.get_text(separator=" ", strip=True), soup
     except Exception:
         return "", None
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# DYNAMIC SOURCE DISCOVERY
-# ═════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+#  GOOGLE SEARCH  (HTML scraping — no API key required)
+# ══════════════════════════════════════════════════════════════════════════════
 
-def _ddg_search(query: str) -> list[str]:
+_GOOGLE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-IN,en;q=0.9",
+    "Referer":         "https://www.google.com/",
+}
+
+def _google_search(query: str, num: int = 10) -> list[str]:
     """
-    DuckDuckGo HTML search — free, no API key, returns real job URLs.
+    Scrape Google Search result URLs for `query`.
+    Returns a list of landing-page URLs (Google redirects stripped).
     """
     urls: list[str] = []
     try:
         resp = requests.get(
-            "https://html.duckduckgo.com/html/",
-            params={"q": query, "kl": "in-en"},
-            headers={**HEADERS, "Referer": "https://duckduckgo.com/"},
+            "https://www.google.com/search",
+            params={"q": query, "num": num, "hl": "en", "gl": "in"},
+            headers=_GOOGLE_HEADERS,
             timeout=REQUEST_TIMEOUT,
         )
         if resp.status_code != 200:
+            logger.debug(f"[Google] HTTP {resp.status_code} for: {query}")
             return urls
         soup = BeautifulSoup(resp.text, "html.parser")
-        for a in soup.select("a.result__a"):
-            href = a.get("href", "")
-            # DDG wraps links: /l/?uddg=<encoded_url>&...
-            if "uddg=" in href:
-                from urllib.parse import parse_qs, urlparse as _up, unquote
-                qs = parse_qs(_up(href).query)
-                real = qs.get("uddg", [""])[0]
-                if real:
-                    href = unquote(real)
-            if href.startswith("http") and not SKIP_LINK_RE.search(href):
-                urls.append(href)
+        # Google wraps organic result links as <a href="/url?q=https://...&...">
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if href.startswith("/url?q="):
+                real = unquote(href[7:].split("&")[0])
+                if (
+                    real.startswith("http")
+                    and "google.com" not in real
+                    and "googleusercontent" not in real
+                    and not SKIP_LINK_RE.search(real)
+                ):
+                    urls.append(real)
     except Exception as e:
-        logger.debug(f"[DDG] search failed: {e}")
-    return urls
+        logger.debug(f"[Google] Search failed for '{query}': {e}")
+    return list(dict.fromkeys(urls))  # deduplicate while preserving order
 
 
-def _dynamic_job_urls(location: str, keywords: list[str]) -> list[str]:
+def _build_google_queries(city: str, keywords: list[str]) -> list[str]:
     """
-    Run several DuckDuckGo searches for fresh job postings and return
-    a de-duplicated list of job page URLs.
+    Compose targeted Google search queries for Performance Marketing roles.
+    Includes site-specific searches for high-quality ATS platforms and
+    job boards that don't block crawlers.
     """
-    city = location or "Mumbai"
-    kw0  = keywords[0] if keywords else "Performance Marketing"
-    queries = [
-        f'"{city}" "{kw0}" job opening site:lever.co OR site:greenhouse.io OR site:ashbyhq.com',
-        f'"{city}" "performance marketing manager" OR "paid media manager" job apply 2025',
-        f'"{city}" "media lead" OR "performance lead" job hiring',
-        f'"mumbai" OR "remote india" performance marketing manager jobs -naukri -linkedin',
-        f'site:instahyre.com "{kw0}"',
-        f'site:cutshort.io "performance marketing"',
-        f'site:wellfound.com/jobs "performance marketing" "{city}"',
+    c   = city or "Mumbai"
+    kw0 = keywords[0] if keywords else "Performance Marketing"
+    # Build "any keyword" OR string (max 4 to stay under Google query length)
+    kw_or = " OR ".join(f'"{k}"' for k in keywords[:4]) if keywords else f'"{kw0}"'
+
+    return [
+        # Direct ATS / career-page job searches
+        f'site:lever.co ({kw_or}) "{c}"',
+        f'site:greenhouse.io ({kw_or}) "{c}"',
+        f'site:ashbyhq.com ({kw_or}) "{c}"',
+        f'site:workable.com ({kw_or}) "{c}"',
+        f'site:bamboohr.com ({kw_or}) "{c}"',
+        f'site:smartrecruiters.com ({kw_or}) "{c}"',
+        # Indian job boards with public search pages
+        f'site:instahyre.com {kw0} {c}',
+        f'site:cutshort.io {kw0} {c}',
+        f'site:wellfound.com {kw0} {c}',
+        f'site:foundit.in {kw0} {c}',
+        f'site:iimjobs.com {kw0} {c}',
+        # Broad Google search for recent job pages
+        f'"{c}" ({kw_or}) job apply 2025 -site:linkedin.com -site:naukri.com',
+        f'"{c}" "performance marketing manager" OR "media lead" job hiring -site:linkedin.com',
+        f'"{c}" "paid media" manager lead opening apply now',
     ]
+
+
+def _dynamic_job_urls(city: str, keywords: list[str]) -> list[str]:
+    """Run all Google queries and return deduplicated candidate job URLs."""
+    queries = _build_google_queries(city, keywords)
     all_urls: list[str] = []
     seen: set[str] = set()
     for q in queries:
-        found = _ddg_search(q)
-        for u in found:
-            if u not in seen:
-                seen.add(u)
-                all_urls.append(u)
-        time.sleep(1.5)
+        for url in _google_search(q):
+            if url not in seen:
+                seen.add(url)
+                all_urls.append(url)
+        time.sleep(2.0)  # polite delay between Google requests
+    logger.info(f"[Scanner] Google search found {len(all_urls)} candidate URLs")
     return all_urls
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# STATS
-# ═════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+#  STATS
+# ══════════════════════════════════════════════════════════════════════════════
 
 @dataclass
 class ScanStats:
-    sources_checked:  int = 0
-    links_found:      int = 0
-    layer0_skipped:   int = 0   # junior / intern
-    layer1_skipped:   int = 0   # not enough PM keywords
-    layer2_skipped:   int = 0   # wrong location
-    layer3_skipped:   int = 0   # wrong role title
-    layer4_skipped:   int = 0   # wrong seniority
-    duplicate_skipped: int = 0
-    jobs_evaluated:   int = 0
-    jobs_saved:       int = 0
-    jobs_queued:      int = 0
-    errors:           int = 0
-    current_source:   str = ""
-    status:           str = "idle"
-    last_run_start:   Optional[str] = None
-    last_run_end:     Optional[str] = None
+    sources_checked:   int = 0
+    links_found:       int = 0
+    # Pre-filters (free)
+    skipped_empty:     int = 0
+    skipped_junior:    int = 0
+    skipped_senior:    int = 0
+    skipped_no_pm:     int = 0
+    skipped_no_kw:     int = 0
+    skipped_no_loc:    int = 0
+    skipped_wrong_fn:  int = 0
+    skipped_duplicate: int = 0
+    # AI filters (paid)
+    jobs_sent_to_ai:   int = 0
+    jobs_ai_filtered:  int = 0
+    jobs_saved:        int = 0
+    jobs_queued:       int = 0
+    errors:            int = 0
+    current_source:    str = ""
+    status:            str = "idle"
+    last_run_start:    Optional[str] = None
+    last_run_end:      Optional[str] = None
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SCANNER
-# ═════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+#  JOB SCANNER
+# ══════════════════════════════════════════════════════════════════════════════
 
 class JobScanner:
     def __init__(self):
         self._thread: Optional[threading.Thread] = None
         self._running = False
-        self._lock   = threading.Lock()
-        self._app    = None
-        self.stats   = ScanStats()
+        self._lock    = threading.Lock()
+        self._app     = None
+        self.stats    = ScanStats()
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
-    def start(self, app):
+    def start(self, app) -> dict:
         with self._lock:
             if self._running:
                 return {"started": False, "reason": "already_running"}
@@ -383,7 +460,7 @@ class JobScanner:
         logger.info("[Scanner] Continuous mode started.")
         return {"started": True, "mode": "continuous"}
 
-    def stop(self):
+    def stop(self) -> dict:
         with self._lock:
             if not self._running:
                 return {"stopped": False, "reason": "not_running"}
@@ -393,7 +470,7 @@ class JobScanner:
         logger.info("[Scanner] Stop requested.")
         return {"stopped": True}
 
-    def run_once(self, app):
+    def run_once(self, app) -> dict:
         with self._lock:
             if self._running:
                 return {"started": False, "reason": "already_running"}
@@ -419,9 +496,10 @@ class JobScanner:
 
     def get_status(self) -> dict:
         s = self.stats
-        total_filtered = (
-            s.layer0_skipped + s.layer1_skipped + s.layer2_skipped
-            + s.layer3_skipped + s.layer4_skipped + s.duplicate_skipped
+        pre_filtered = (
+            s.skipped_empty + s.skipped_junior + s.skipped_senior
+            + s.skipped_no_pm + s.skipped_no_kw + s.skipped_no_loc
+            + s.skipped_wrong_fn + s.skipped_duplicate
         )
         return {
             "is_running":     self._running,
@@ -432,19 +510,22 @@ class JobScanner:
             "stats": {
                 "sources_checked": s.sources_checked,
                 "links_found":     s.links_found,
-                "pm_relevant":     s.jobs_evaluated,
                 "jobs_saved":      s.jobs_saved,
                 "jobs_queued":     s.jobs_queued,
-                "filtered_out":    total_filtered,
+                "jobs_sent_to_ai": s.jobs_sent_to_ai,
+                "ai_filtered":     s.jobs_ai_filtered,
+                "pre_filtered":    pre_filtered,
                 "errors":          s.errors,
-                # Layer breakdown for debugging
                 "filters": {
-                    "junior_skip":    s.layer0_skipped,
-                    "no_pm_keywords": s.layer1_skipped,
-                    "wrong_location": s.layer2_skipped,
-                    "wrong_role":     s.layer3_skipped,
-                    "wrong_seniority":s.layer4_skipped,
-                    "duplicate":      s.duplicate_skipped,
+                    "empty_jd":    s.skipped_empty,
+                    "too_junior":  s.skipped_junior,
+                    "too_senior":  s.skipped_senior,
+                    "no_pm_kw":    s.skipped_no_pm,
+                    "no_user_kw":  s.skipped_no_kw,
+                    "no_location": s.skipped_no_loc,
+                    "wrong_fn":    s.skipped_wrong_fn,
+                    "duplicate":   s.skipped_duplicate,
+                    "ai_rejected": s.jobs_ai_filtered,
                 },
             },
         }
@@ -461,7 +542,7 @@ class JobScanner:
 
     @staticmethod
     def save_settings(data: dict) -> None:
-        current = {}
+        current: dict = {}
         try:
             with open(SETTINGS_PATH) as f:
                 current = json.load(f)
@@ -471,7 +552,7 @@ class JobScanner:
         with open(SETTINGS_PATH, "w") as f:
             json.dump(current, f, indent=2)
 
-    # ── Internal loops ─────────────────────────────────────────────────────────
+    # ── Main loops ─────────────────────────────────────────────────────────────
 
     def _continuous_loop(self):
         while self._running:
@@ -486,68 +567,64 @@ class JobScanner:
     def _scan_pass(self):
         self.stats.last_run_start = datetime.now().isoformat()
         self.stats.status         = "scanning"
+
         settings = self.load_settings()
-        location = settings.get("location", "").strip()
+        city     = settings.get("location", "Mumbai").strip()
         keywords = settings.get("search_keywords", ["Performance Marketing"])
-        auto_start_agent = settings.get("auto_start_agent", True)
+        auto_start = settings.get("auto_start_agent", True)
 
-        # ── 1. Static sources ──────────────────────────────────────────────────
-        static_sources = self._build_static_sources(location, keywords)
-        # ── 2. Dynamic sources via DDG search ─────────────────────────────────
-        logger.info("[Scanner] Running dynamic DDG discovery…")
-        dynamic_urls = _dynamic_job_urls(location, keywords)
-        logger.info(f"[Scanner] DDG found {len(dynamic_urls)} candidate URLs")
+        logger.info(f"[Scanner] Pass starting — city='{city}' keywords={keywords[:3]}")
 
-        # Process static sources (career page crawl)
-        for src in static_sources:
+        # ── 1. Static company career pages ────────────────────────────────────
+        static = self._build_static_sources(city, keywords)
+        for src in static:
             if not self._running:
                 break
             try:
                 self._crawl_source(src, settings)
-            except Exception as exc:
-                logger.warning(f"[Scanner] Source error {src['name']}: {exc}")
+            except Exception as e:
+                logger.warning(f"[Scanner] Source error {src['name']}: {e}")
                 self.stats.errors += 1
             time.sleep(DELAY_BETWEEN_PAGES)
 
-        # Process dynamic URLs directly (each is already a candidate job URL)
-        for job_url in dynamic_urls:
+        # ── 2. Dynamic Google-search URLs ─────────────────────────────────────
+        google_urls = _dynamic_job_urls(city, keywords)
+        for job_url in google_urls:
             if not self._running:
                 break
             try:
-                self._evaluate_candidate(job_url, settings)
-            except Exception as exc:
-                logger.debug(f"[Scanner] Dynamic URL error {job_url}: {exc}")
+                self._run_pipeline(job_url, settings)
+            except Exception as e:
+                logger.debug(f"[Scanner] Pipeline error {job_url}: {e}")
                 self.stats.errors += 1
             time.sleep(DELAY_BETWEEN_PAGES)
 
         self.stats.last_run_end   = datetime.now().isoformat()
         self.stats.current_source = ""
 
-        # Auto-start agent if new Grade A/B jobs were queued
-        if auto_start_agent and self.stats.jobs_queued > 0 and self._app:
+        # Auto-start agent when new A/B jobs queued
+        if auto_start and self.stats.jobs_queued > 0 and self._app:
             try:
                 from services.agent import career_agent
                 if not career_agent.is_running:
                     career_agent.start(self._app)
                     logger.info("[Scanner] Auto-started agent.")
             except Exception as e:
-                logger.warning(f"[Scanner] Auto-start agent failed: {e}")
+                logger.warning(f"[Scanner] Auto-start agent error: {e}")
 
-        total_filtered = (
-            self.stats.layer0_skipped + self.stats.layer1_skipped
-            + self.stats.layer2_skipped + self.stats.layer3_skipped
-            + self.stats.layer4_skipped
-        )
+        s = self.stats
+        pre = (s.skipped_empty + s.skipped_junior + s.skipped_senior
+               + s.skipped_no_pm + s.skipped_no_kw + s.skipped_no_loc
+               + s.skipped_wrong_fn + s.skipped_duplicate)
         logger.info(
             f"[Scanner] Pass complete — "
-            f"sources:{self.stats.sources_checked} links:{self.stats.links_found} "
-            f"saved:{self.stats.jobs_saved} queued:{self.stats.jobs_queued} "
-            f"filtered:{total_filtered}"
+            f"links:{s.links_found} pre-filtered:{pre} "
+            f"ai-sent:{s.jobs_sent_to_ai} saved:{s.jobs_saved} queued:{s.jobs_queued}"
         )
 
-    # ── Source list building ───────────────────────────────────────────────────
+    # ── Static source list ─────────────────────────────────────────────────────
 
-    def _build_static_sources(self, location: str, keywords: list) -> list:
+    def _build_static_sources(self, city: str, keywords: list) -> list:
         try:
             with open(SOURCES_PATH) as f:
                 data = json.load(f)
@@ -555,9 +632,9 @@ class JobScanner:
             logger.error(f"[Scanner] Cannot load sources: {e}")
             return []
 
-        query = keywords[0] if keywords else "Performance Marketing"
-        sources: list = []
-        seen_urls: set = set()
+        query   = keywords[0] if keywords else "Performance Marketing"
+        sources = []
+        seen:   set[str] = set()
 
         def _add(name, url, stype):
             if not url:
@@ -566,9 +643,9 @@ class JobScanner:
                 return
             if not url.startswith("http"):
                 url = "https://" + url
-            if url in seen_urls:
+            if url in seen:
                 return
-            seen_urls.add(url)
+            seen.add(url)
             sources.append({"name": name, "url": url, "type": stype})
 
         # Flat sector lists
@@ -592,76 +669,42 @@ class JobScanner:
                             careers = item.get("careers") or item.get("url", "")
                             _add(item.get("name", careers), careers, "career_page")
 
-        # VC portfolio job boards
         for item in data.get("vc_portfolio_jobs", []):
             if isinstance(item, dict):
                 url = item.get("url", "")
                 _add(item.get("name", url), url, "career_page")
 
-        # Job portals with search_url templates (skip blocked ones)
-        loc_param = location or "India"
+        # Portal search URLs (skip blocked domains)
+        loc_q = quote(city or "India")
+        q_enc = quote(query)
         for region, portal_list in data.get("job_portals", {}).items():
             for portal in (portal_list if isinstance(portal_list, list) else []):
                 if not isinstance(portal, dict):
                     continue
                 tpl = portal.get("search_url", "")
-                if not tpl:
+                base = portal.get("url", "")
+                if not tpl or any(d in base for d in SKIP_SOURCE_DOMAINS):
                     continue
-                base_url = portal.get("url", "")
-                if any(d in base_url for d in SKIP_SOURCE_DOMAINS):
-                    continue
-                url = tpl.replace("{query}", quote(query)).replace("{location}", quote(loc_param))
-                _add(portal.get("name", base_url), url, "search_results")
+                url = tpl.replace("{query}", q_enc).replace("{location}", loc_q)
+                _add(portal.get("name", base), url, "search_results")
 
-        # ── Extra high-signal sources not in job_sources.json ─────────────────
-        extra = self._extra_pm_sources(location, query)
-        for name, url in extra:
+        # Extra high-signal sources
+        for name, url in self._extra_pm_sources(city, query):
             _add(name, url, "search_results")
 
         return sources
 
-    def _extra_pm_sources(self, location: str, keyword: str) -> list[tuple[str, str]]:
-        """
-        Hardcoded list of high-signal job pages that specifically surface
-        Performance Marketing roles — including Indian market boards and
-        ATS platforms with public search.
-        """
-        city = quote(location or "Mumbai")
-        kw   = quote(keyword or "Performance Marketing")
+    def _extra_pm_sources(self, city: str, keyword: str) -> list[tuple[str, str]]:
+        c  = quote(city or "Mumbai")
+        kw = quote(keyword or "Performance Marketing")
         return [
-            # Instahyre — quality sourcing for Indian startups
-            ("Instahyre – PM Jobs",
-             f"https://www.instahyre.com/search-jobs/?query={kw}&location={city}"),
-            # Cutshort — startup-heavy, PM roles
-            ("Cutshort – PM Jobs",
-             f"https://cutshort.io/jobs?q={kw}&location={city}"),
-            # Wellfound (AngelList Talent) — startup jobs globally
-            ("Wellfound – PM Jobs",
-             f"https://wellfound.com/jobs?role=performance-marketing&location={city}"),
-            # Foundit (ex-Monster India)
-            ("Foundit – Performance Marketing",
-             f"https://www.foundit.in/srp/results?query={kw}&location={city}"),
-            # Hirist — tech + digital marketing
-            ("Hirist – Performance Marketing",
-             f"https://www.hirist.tech/search-jobs?q={kw}&l={city}"),
-            # iimjobs — management/marketing level
-            ("iimjobs – Performance Marketing",
-             f"https://www.iimjobs.com/search.php?q={kw}&loc={city}"),
-            # Lever public jobs board search
-            ("Lever – PM Roles",
-             f"https://jobs.lever.co/?search={kw}"),
-            # Greenhouse jobs board
-            ("Greenhouse – PM Roles",
-             f"https://boards.greenhouse.io/embed/job_board?q={kw}"),
-            # Workable public jobs
-            ("Workable – PM Jobs",
-             f"https://apply.workable.com/#jobs?query={kw}"),
-            # Otta (global marketing jobs, good for EMEA)
-            ("Otta – Performance Marketing",
-             f"https://app.otta.com/jobs/search?query={kw}"),
-            # Flexi / remote-friendly India boards
-            ("FlexJobs – Performance Marketing",
-             f"https://www.flexjobs.com/search?search={kw}&location={city}"),
+            ("Instahyre PM Jobs",    f"https://www.instahyre.com/search-jobs/?query={kw}&location={c}"),
+            ("Cutshort PM Jobs",     f"https://cutshort.io/jobs?q={kw}&location={c}"),
+            ("Wellfound PM Jobs",    f"https://wellfound.com/jobs?role=performance-marketing&location={c}"),
+            ("Foundit PM Jobs",      f"https://www.foundit.in/srp/results?query={kw}&location={c}"),
+            ("Hirist PM Jobs",       f"https://www.hirist.tech/search-jobs?q={kw}&l={c}"),
+            ("iimjobs PM",           f"https://www.iimjobs.com/search.php?q={kw}&loc={c}"),
+            ("Lever Public Board",   f"https://jobs.lever.co/?search={kw}"),
         ]
 
     # ── Career page crawl ──────────────────────────────────────────────────────
@@ -676,12 +719,12 @@ class JobScanner:
             resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=True)
             if resp.status_code != 200:
                 return
-        except Exception as exc:
-            logger.debug(f"[Scanner] Fetch failed {url}: {exc}")
+        except Exception as e:
+            logger.debug(f"[Scanner] Fetch {url}: {e}")
             return
 
-        soup      = BeautifulSoup(resp.text, "html.parser")
-        base_dom  = urlparse(url).netloc
+        soup     = BeautifulSoup(resp.text, "html.parser")
+        base_dom = urlparse(url).netloc
         candidates: list[str] = []
 
         for tag in soup.find_all("a", href=True):
@@ -689,12 +732,11 @@ class JobScanner:
             abs_url     = urljoin(url, href)
             anchor_text = (tag.get_text(separator=" ") or "").strip()
 
-            # Never follow banned domains
             if SKIP_LINK_RE.search(abs_url):
                 continue
 
-            parsed = urlparse(abs_url)
-            same_domain = (
+            parsed    = urlparse(abs_url)
+            same_dom  = (
                 parsed.netloc == base_dom
                 or parsed.netloc.endswith("." + base_dom)
                 or base_dom.endswith("." + parsed.netloc)
@@ -705,12 +747,16 @@ class JobScanner:
                 if not is_ats:
                     continue
             else:
-                if not (same_domain or is_ats) or not JOB_URL_RE.search(abs_url):
+                if not (same_dom or is_ats) or not JOB_URL_RE.search(abs_url):
                     continue
 
-            # ── Layer 0 check on URL + anchor text (free, no network) ─────────
-            if _layer0_junior(abs_url) or _layer0_junior(anchor_text):
-                self.stats.layer0_skipped += 1
+            # Quick seniority pre-check on anchor text and URL (free, no fetch)
+            pre_text = anchor_text + " " + abs_url
+            if _TOO_JUNIOR_RE.search(pre_text):
+                self.stats.skipped_junior += 1
+                continue
+            if _TOO_SENIOR_RE.search(pre_text):
+                self.stats.skipped_senior += 1
                 continue
 
             candidates.append(abs_url)
@@ -720,13 +766,16 @@ class JobScanner:
         for job_url in candidates[:MAX_JOBS_PER_SOURCE]:
             if not self._running:
                 break
-            self._evaluate_candidate(job_url, settings)
+            self._run_pipeline(job_url, settings)
             time.sleep(DELAY_BETWEEN_PAGES)
 
-    # ── Per-URL evaluation pipeline ───────────────────────────────────────────
+    # ── Full evaluation pipeline ──────────────────────────────────────────────
 
-    def _evaluate_candidate(self, job_url: str, settings: dict):
-        """Run all 6 layers on a single candidate URL and queue if it passes."""
+    def _run_pipeline(self, job_url: str, settings: dict):
+        """
+        Run a candidate URL through all filter layers.
+        Gemini is NEVER called unless every pre-filter passes.
+        """
         if not self._app:
             return
 
@@ -735,91 +784,102 @@ class JobScanner:
                 from models.database import db, ScanHistory, Application, JobPosting
                 from services.dedup import is_duplicate as check_dup
 
-                # ── Dedup: URL already scanned? ────────────────────────────────
+                # ── Dedup: URL already processed? ─────────────────────────────
                 if ScanHistory.query.filter_by(url=job_url).first():
-                    self.stats.duplicate_skipped += 1
+                    self.stats.skipped_duplicate += 1
                     return
 
+                city     = settings.get("location", "Mumbai").strip()
+                keywords = settings.get("search_keywords", [])
+
                 # ── Fetch page ─────────────────────────────────────────────────
-                page_text, soup = _fetch_text(job_url)
-                if not page_text or len(page_text) < 200:
-                    self._record_scan(db, job_url, "fetch_failed")
+                page_text, soup = _fetch_page(job_url)
+
+                # ══ PRE-0/PRE-1 — Empty / thin JD ════════════════════════════
+                if _pre_empty(page_text):
+                    self.stats.skipped_empty += 1
+                    self._record(db, job_url, "empty_jd")
+                    logger.debug(f"[PRE] empty/thin JD: {job_url}")
                     return
 
                 title = _extract_title(soup) if soup else ""
-                city  = settings.get("location", "").strip()
 
-                # ══ LAYER 0 — Junior/intern in page title ═════════════════════
-                if _layer0_junior(title):
-                    self.stats.layer0_skipped += 1
-                    self._record_scan(db, job_url, "junior_title")
-                    logger.debug(f"[L0] SKIP junior title: {title[:60]}")
+                # ══ L0 — Seniority (bi-directional) ══════════════════════════
+                seniority_reason = _l0_seniority(title, page_text)
+                if seniority_reason:
+                    if "junior" in seniority_reason:
+                        self.stats.skipped_junior += 1
+                    else:
+                        self.stats.skipped_senior += 1
+                    self._record(db, job_url, seniority_reason.replace(" ", "_"))
+                    logger.debug(f"[L0] {seniority_reason}: '{title[:60]}' {job_url}")
                     return
 
-                # ══ LAYER 1 — PM keyword density ══════════════════════════════
-                if _layer1_pm_density(page_text):
-                    self.stats.layer1_skipped += 1
-                    self._record_scan(db, job_url, "no_pm_keywords")
-                    logger.debug(f"[L1] SKIP low PM density: {job_url}")
+                # ══ L1a — PM keyword density ══════════════════════════════════
+                if _l1a_pm_density(page_text):
+                    self.stats.skipped_no_pm += 1
+                    self._record(db, job_url, "no_pm_keywords")
+                    logger.debug(f"[L1a] insufficient PM keywords: {job_url}")
                     return
 
-                # ══ LAYER 2 — Location hard check ═════════════════════════════
-                if _layer2_location(page_text, city):
-                    self.stats.layer2_skipped += 1
-                    self._record_scan(db, job_url, "wrong_location")
-                    logger.debug(f"[L2] SKIP location '{city}' not found: {job_url}")
+                # ══ L1b — User keyword cross-check ════════════════════════════
+                if _l1b_user_keywords(page_text, keywords):
+                    self.stats.skipped_no_kw += 1
+                    self._record(db, job_url, "no_user_keyword")
+                    logger.debug(f"[L1b] none of user keywords found: {job_url}")
                     return
 
-                # ══ LAYER 3 — Role title PM relevance ═════════════════════════
-                if _layer3_role_title(title):
-                    self.stats.layer3_skipped += 1
-                    self._record_scan(db, job_url, "non_pm_role")
-                    logger.debug(f"[L3] SKIP non-PM role title: {title[:60]}")
+                # ══ L2 — Location hard gate ═══════════════════════════════════
+                if _l2_location(page_text, city):
+                    self.stats.skipped_no_loc += 1
+                    self._record(db, job_url, "wrong_location")
+                    logger.debug(f"[L2] city '{city}' not in JD: {job_url}")
                     return
 
-                # ══ LAYER 4 — Seniority gate ══════════════════════════════════
-                if _layer4_seniority(title, page_text):
-                    self.stats.layer4_skipped += 1
-                    self._record_scan(db, job_url, "junior_seniority")
-                    logger.debug(f"[L4] SKIP seniority: {title[:60]}")
+                # ══ L3 — Role title function check ════════════════════════════
+                if _l3_role_title(title):
+                    self.stats.skipped_wrong_fn += 1
+                    self._record(db, job_url, "non_pm_function")
+                    logger.debug(f"[L3] non-PM role title '{title[:60]}'")
                     return
 
-                # ══ LAYER 5 — Gemini full AI evaluation ═══════════════════════
-                # Trim to first 6000 chars to stay within context limits
+                # ══ L4 — Gemini AI evaluation ════════════════════════════════
+                # Only reached if ALL pre-filters pass — no wasted API tokens.
                 eval_text = page_text[:6000]
                 from services.gemini_client import evaluate_job
+                self.stats.jobs_sent_to_ai += 1
                 result = evaluate_job(eval_text, job_metadata={"url": job_url})
-                self.stats.jobs_evaluated += 1
 
                 if not result.get("success"):
                     ft = result.get("filter_type", "ai_filter")
-                    logger.debug(f"[L5] AI filtered ({ft}): {job_url}")
-                    self._record_scan(db, job_url, ft or "ai_filter")
+                    self.stats.jobs_ai_filtered += 1
+                    self._record(db, job_url, ft or "ai_filter")
+                    logger.debug(f"[L4] AI rejected ({ft}): {job_url}")
                     return
 
-                data  = result["data"]
-                grade = data.get("grade", "F")
-                role  = data.get("role", title or "Unknown")
+                data    = result["data"]
+                grade   = data.get("grade", "F")
+                role    = data.get("role", title or "Unknown")
                 company = data.get("company", "Unknown")
-                loc   = data.get("location", city)
-                score_raw = data.get("score")
-                score = float(score_raw) if score_raw is not None else None
-                rec   = data.get("recommendation", "")
+                loc     = data.get("location", city)
+                score   = (lambda v: float(v) if v is not None else None)(data.get("score"))
+                rec     = data.get("recommendation", "")
 
-                # ══ LAYER 6 — Grade gate: only A or B proceed ═════════════════
+                # ══ L5 — Grade gate ═══════════════════════════════════════════
                 if grade not in ("A", "B"):
-                    logger.debug(f"[L6] Grade {grade} — skipping {company}: {role}")
-                    self._record_scan(db, job_url, f"grade_{grade}")
+                    self.stats.jobs_ai_filtered += 1
+                    self._record(db, job_url, f"grade_{grade}")
+                    logger.debug(f"[L5] Grade {grade} — skip: {company} {role}")
                     return
 
-                # ── Post-AI location sanity check ──────────────────────────────
-                # If Gemini extracted a location and it disagrees with our city, skip
-                if city and loc and loc.lower() not in ("remote", "hybrid", "global"):
-                    if city.lower() not in loc.lower() and loc.lower() not in city.lower():
-                        if not _REMOTE_RE.search(loc):
-                            logger.debug(f"[Post-AI] Location mismatch: '{loc}' vs '{city}'")
-                            self._record_scan(db, job_url, "ai_location_mismatch")
-                            return
+                # ══ L6 — Post-AI location sanity ══════════════════════════════
+                if city and loc and loc.lower() not in ("remote", "hybrid", "global", ""):
+                    if (city.lower() not in loc.lower()
+                            and loc.lower() not in city.lower()
+                            and not _REMOTE_RE.search(loc)):
+                        self._record(db, job_url, "ai_location_mismatch")
+                        logger.debug(f"[L6] AI location '{loc}' ≠ '{city}'")
+                        return
 
                 logger.info(f"[Scanner] ✓ Grade {grade} | {company} | {role} | {loc}")
 
@@ -827,10 +887,10 @@ class JobScanner:
                 from models.database import _normalize
                 dedup = check_dup(job_url, company, role, loc)
                 if dedup["is_duplicate"]:
-                    self.stats.duplicate_skipped += 1
+                    self.stats.skipped_duplicate += 1
                     return
 
-                # ── Save to DB ─────────────────────────────────────────────────
+                # ── Persist ────────────────────────────────────────────────────
                 posting = JobPosting(
                     job_hash=dedup["job_hash"],
                     company_normalized=_normalize(company),
@@ -862,22 +922,17 @@ class JobScanner:
                     status="Evaluated",
                 )
                 db.session.add(application)
-                db.session.add(ScanHistory(
-                    url=job_url, platform="auto_scan",
-                    scanned_at=datetime.utcnow(), result="new",
-                ))
+                self._record(db, job_url, "new")
                 db.session.commit()
                 self.stats.jobs_saved += 1
 
-                # ── Auto-queue Grade A/B into agent ───────────────────────────
+                # ── Queue into agent ───────────────────────────────────────────
                 try:
                     from services.agent import career_agent
                     career_agent.add_task(
                         app_id=application.id,
-                        company=company,
-                        role=role,
-                        url=job_url,
-                        jd_text=eval_text,
+                        company=company, role=role,
+                        url=job_url, jd_text=eval_text,
                     )
                     self.stats.jobs_queued += 1
                     logger.info(f"[Scanner] Queued for agent: {company} — {role}")
@@ -894,15 +949,16 @@ class JobScanner:
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 
-    def _record_scan(self, db, url: str, result: str):
-        """Write a ScanHistory entry so we never re-process this URL."""
+    def _record(self, db, url: str, result: str):
+        """Save a ScanHistory row so the URL is never processed again."""
         try:
             from models.database import ScanHistory
-            db.session.add(ScanHistory(
-                url=url, platform="auto_scan",
-                scanned_at=datetime.utcnow(), result=result,
-            ))
-            db.session.commit()
+            if not ScanHistory.query.filter_by(url=url).first():
+                db.session.add(ScanHistory(
+                    url=url, platform="auto_scan",
+                    scanned_at=datetime.utcnow(), result=result,
+                ))
+                db.session.commit()
         except Exception:
             try:
                 db.session.rollback()

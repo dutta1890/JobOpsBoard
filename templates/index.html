@@ -345,19 +345,15 @@
       </div>
     </div>
 
-    <!-- Stats grid -->
-    <div class="grid grid-cols-5 gap-2 mb-4">
+    <!-- Stats grid — top row: headline numbers -->
+    <div class="grid grid-cols-4 gap-2 mb-2">
       <div class="bg-gray-700 rounded-lg p-2.5 text-center">
-        <div id="sc-sources" class="text-xl font-bold text-white">0</div>
-        <div class="text-gray-400 text-xs mt-0.5">Sources</div>
-      </div>
-      <div class="bg-gray-700/60 rounded-lg p-2.5 text-center">
-        <div id="sc-links" class="text-xl font-bold text-gray-300">0</div>
-        <div class="text-gray-400 text-xs mt-0.5">Links</div>
+        <div id="sc-links" class="text-xl font-bold text-white">0</div>
+        <div class="text-gray-400 text-xs mt-0.5">Links Found</div>
       </div>
       <div class="bg-indigo-900/60 rounded-lg p-2.5 text-center">
-        <div id="sc-pm" class="text-xl font-bold text-indigo-300">0</div>
-        <div class="text-gray-400 text-xs mt-0.5">PM Relevant</div>
+        <div id="sc-ai" class="text-xl font-bold text-indigo-300">0</div>
+        <div class="text-gray-400 text-xs mt-0.5">Sent to AI</div>
       </div>
       <div class="bg-green-900/60 rounded-lg p-2.5 text-center">
         <div id="sc-saved" class="text-xl font-bold text-green-300">0</div>
@@ -366,6 +362,38 @@
       <div class="bg-yellow-900/60 rounded-lg p-2.5 text-center">
         <div id="sc-queued" class="text-xl font-bold text-yellow-300">0</div>
         <div class="text-gray-400 text-xs mt-0.5">Queued</div>
+      </div>
+    </div>
+
+    <!-- Filter breakdown — compact row -->
+    <div id="sc-filter-row" class="grid grid-cols-7 gap-1 mb-3 text-center">
+      <div class="bg-red-950/50 rounded p-1.5" title="Empty or structureless page">
+        <div id="fc-empty" class="text-sm font-bold text-red-400">0</div>
+        <div class="text-gray-500 text-[10px] leading-tight">Empty JD</div>
+      </div>
+      <div class="bg-orange-950/50 rounded p-1.5" title="Too junior (intern/fresher)">
+        <div id="fc-junior" class="text-sm font-bold text-orange-400">0</div>
+        <div class="text-gray-500 text-[10px] leading-tight">Junior</div>
+      </div>
+      <div class="bg-orange-950/50 rounded p-1.5" title="Too senior (Head/Director/VP)">
+        <div id="fc-senior" class="text-sm font-bold text-orange-400">0</div>
+        <div class="text-gray-500 text-[10px] leading-tight">Too Senior</div>
+      </div>
+      <div class="bg-purple-950/50 rounded p-1.5" title="Not enough PM keywords">
+        <div id="fc-pm" class="text-sm font-bold text-purple-400">0</div>
+        <div class="text-gray-500 text-[10px] leading-tight">No PM KW</div>
+      </div>
+      <div class="bg-purple-950/50 rounded p-1.5" title="None of your search keywords found">
+        <div id="fc-kw" class="text-sm font-bold text-purple-400">0</div>
+        <div class="text-gray-500 text-[10px] leading-tight">No User KW</div>
+      </div>
+      <div class="bg-blue-950/50 rounded p-1.5" title="Target city not mentioned">
+        <div id="fc-loc" class="text-sm font-bold text-blue-400">0</div>
+        <div class="text-gray-500 text-[10px] leading-tight">No City</div>
+      </div>
+      <div class="bg-gray-700/50 rounded p-1.5" title="Rejected by AI evaluation">
+        <div id="fc-ai" class="text-sm font-bold text-gray-400">0</div>
+        <div class="text-gray-500 text-[10px] leading-tight">AI Reject</div>
       </div>
     </div>
 
@@ -379,9 +407,13 @@
     </div>
 
     <p class="text-xs text-gray-600">
-      <span class="text-yellow-600">Filters active:</span>
-      job age ≤7 days · no junior/intern · PM keywords required · target city matched · scam detection · seniority check.
-      LinkedIn/Naukri/Indeed skipped (require login). When Grade A/B found, agent starts automatically.
+      <span class="text-yellow-600">7 filter layers (pre-AI, free):</span>
+      empty JD → too junior (intern/fresher) → too senior (Head/Director/VP) → PM keyword density →
+      your search keywords → city in JD text → non-PM role title — only then is AI called.
+      <br class="mb-0.5"/>
+      <span class="text-yellow-600">Seniority:</span> accepts Manager · Senior Manager · Lead · Senior.
+      Skips Director, Head, VP, Executive, C-level, Intern, Junior.
+      Google Search used for discovery. LinkedIn/Naukri/Indeed skipped.
     </p>
   </div>
 
@@ -458,11 +490,20 @@
             stopBtn.classList.add('hidden');
           }
 
-          document.getElementById('sc-sources').textContent = s.sources_checked || 0;
-          document.getElementById('sc-links').textContent   = s.links_found     || 0;
-          document.getElementById('sc-pm').textContent      = s.pm_relevant     || 0;
-          document.getElementById('sc-saved').textContent   = s.jobs_saved      || 0;
-          document.getElementById('sc-queued').textContent  = s.jobs_queued     || 0;
+          document.getElementById('sc-links').textContent  = s.links_found      || 0;
+          document.getElementById('sc-ai').textContent    = s.jobs_sent_to_ai  || 0;
+          document.getElementById('sc-saved').textContent = s.jobs_saved       || 0;
+          document.getElementById('sc-queued').textContent= s.jobs_queued      || 0;
+
+          // Filter breakdown
+          const f = s.filters || {};
+          document.getElementById('fc-empty').textContent  = f.empty_jd    || 0;
+          document.getElementById('fc-junior').textContent = f.too_junior   || 0;
+          document.getElementById('fc-senior').textContent = f.too_senior   || 0;
+          document.getElementById('fc-pm').textContent     = f.no_pm_kw     || 0;
+          document.getElementById('fc-kw').textContent     = f.no_user_kw   || 0;
+          document.getElementById('fc-loc').textContent    = f.no_location  || 0;
+          document.getElementById('fc-ai').textContent     = f.ai_rejected  || 0;
 
           if (data.current_source) {
             currentBox.classList.remove('hidden');
