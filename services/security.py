@@ -95,7 +95,7 @@ def check_rate_limit(ip: str) -> bool:
 
 
 def rate_limit(f):
-    """Decorator: return 429 if the caller exceeds the rate limit."""
+    """Decorator: return 429 if the caller exceeds the global rate limit."""
     @wraps(f)
     def decorated(*args, **kwargs):
         ip = request.remote_addr or "unknown"
@@ -103,6 +103,38 @@ def rate_limit(f):
             return {"error": "Rate limit exceeded"}, 429
         return f(*args, **kwargs)
     return decorated
+
+
+def make_rate_limiter(max_requests: int, window_seconds: int = 60):
+    """Factory: create a per-route rate-limit decorator with custom thresholds.
+
+    Usage:
+        _evaluate_limit = make_rate_limiter(max_requests=20, window_seconds=60)
+
+        @app.route("/evaluate", methods=["POST"])
+        @_evaluate_limit
+        def evaluate(): ...
+    """
+    store: dict[str, tuple[int, datetime]] = {}
+
+    def decorator(f):
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            ip = request.remote_addr or "unknown"
+            now = datetime.now()
+            if ip in store:
+                count, window_start = store[ip]
+                if (now - window_start).total_seconds() > window_seconds:
+                    store[ip] = (1, now)
+                elif count >= max_requests:
+                    return {"error": f"Rate limit exceeded ({max_requests} req/{window_seconds}s)"}, 429
+                else:
+                    store[ip] = (count + 1, window_start)
+            else:
+                store[ip] = (1, now)
+            return f(*args, **kwargs)
+        return decorated
+    return decorator
 
 
 # ── Input sanitisation ─────────────────────────────────────────────────────────

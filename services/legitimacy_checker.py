@@ -228,6 +228,16 @@ class LegitimacyChecker:
             return {"valid": False, "error": str(exc)}
 
     def _check_domain_age(self, domain: str) -> dict:
+        # In-memory cache: domain → (result, cached_at). TTL = 24 hours.
+        if not hasattr(self, "_whois_cache"):
+            self._whois_cache: dict = {}
+        cached = self._whois_cache.get(domain)
+        if cached:
+            result, cached_at = cached
+            if (datetime.now() - cached_at).total_seconds() < 86400:
+                return result
+
+        result: dict
         try:
             import whois
             w = whois.whois(domain)
@@ -236,10 +246,15 @@ class LegitimacyChecker:
                 creation = creation[0]
             if creation and isinstance(creation, datetime):
                 age_days = (datetime.now() - creation).days
-                return {"days": age_days, "created": str(creation)}
+                result = {"days": age_days, "created": str(creation)}
+            else:
+                result = {"days": None, "error": "No creation date returned"}
         except Exception as exc:
             logger.debug(f"WHOIS lookup failed for {domain}: {exc}")
-        return {"days": None, "error": "Could not determine domain age"}
+            result = {"days": None, "error": "Could not determine domain age"}
+
+        self._whois_cache[domain] = (result, datetime.now())
+        return result
 
     def _has_suspicious_tld(self, domain: str) -> bool:
         return any(domain.endswith(tld) for tld in SUSPICIOUS_TLDS)

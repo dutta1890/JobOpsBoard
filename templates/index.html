@@ -326,7 +326,158 @@
       <p class="text-gray-600 text-xs mt-1">Evaluate a job above and save it to get started.</p>
     </div>
     {% endif %}
+
+    {% if applications %}
+    <div class="px-6 py-3 border-t border-gray-700 flex justify-end">
+      <a href="/api/export/csv"
+         class="text-xs text-gray-400 hover:text-white transition-colors flex items-center gap-1">
+        ↓ Export CSV
+      </a>
+    </div>
+    {% endif %}
   </div>
+
+  <!-- ── Interview Prep ───────────────────────────────────────────────── -->
+  <div class="bg-gray-800 rounded-xl border border-gray-700">
+    <div class="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+      <div>
+        <h3 class="text-lg font-semibold">🎤 Interview Prep</h3>
+        <p class="text-gray-400 text-sm mt-0.5">Generate STAR+R stories from your achievements</p>
+      </div>
+      <button onclick="document.getElementById('star-form').classList.toggle('hidden')"
+        class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">
+        + New Story
+      </button>
+    </div>
+
+    <!-- Generate Story Form (hidden by default) -->
+    <div id="star-form" class="hidden px-6 py-4 border-b border-gray-700 bg-gray-900/40">
+      <div class="space-y-3">
+        <div>
+          <label class="block text-xs text-gray-400 mb-1">Achievement / Situation</label>
+          <textarea id="star-achievement" rows="3"
+            placeholder="e.g. HealthHub: I restructured all campaigns using SKAG structure and grew leads from near-zero to 200-300/month within 3 months with 24M impressions..."
+            class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 resize-none"></textarea>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-400 mb-1">Question Type</label>
+          <select id="star-qtype"
+            class="bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+            <option>Tell me about a time you drove significant results</option>
+            <option>Tell me about a time you managed a large budget</option>
+            <option>Tell me about a time you led a team</option>
+            <option>Tell me about a time you turned around a failing campaign</option>
+            <option>Tell me about a time you worked with limited resources</option>
+            <option>Tell me about a challenge you overcame</option>
+            <option>Give me an example of data-driven decision making</option>
+            <option>Tell me about your biggest professional achievement</option>
+          </select>
+        </div>
+        <button onclick="generateStarStory()"
+          class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+          Generate STAR+R Story
+        </button>
+      </div>
+      <div id="star-result" class="mt-4"></div>
+    </div>
+
+    <!-- Existing Stories -->
+    <div id="star-stories" class="divide-y divide-gray-700/50">
+      <div class="px-6 py-8 text-center text-gray-500 text-sm" id="star-empty">
+        Loading stories...
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Load existing STAR stories on page load
+    fetch('/api/interview/stories')
+      .then(r => r.json())
+      .then(d => {
+        const container = document.getElementById('star-stories');
+        const empty = document.getElementById('star-empty');
+        if (!d.stories || d.stories.length === 0) {
+          empty.textContent = 'No stories yet. Click "+ New Story" to generate your first STAR+R story.';
+          return;
+        }
+        empty.remove();
+        container.innerHTML = d.stories.map(s => renderStory(s)).join('');
+      })
+      .catch(() => {
+        document.getElementById('star-empty').textContent = 'Could not load stories.';
+      });
+
+    function renderStory(s) {
+      const actions = (s.actions || []).map(a => `<li class="text-gray-300 text-xs">${a}</li>`).join('');
+      const results = (s.results || []).map(r => `<li class="text-green-400 text-xs font-medium">${r}</li>`).join('');
+      const qtypes = (s.question_types || []).slice(0, 2).map(q =>
+        `<span class="px-2 py-0.5 bg-indigo-900/50 text-indigo-300 rounded text-xs">${q}</span>`
+      ).join('');
+      return `<div class="px-6 py-4">
+        <div class="flex items-start justify-between gap-4 mb-2">
+          <div class="font-medium text-white text-sm">${s.title || 'Story'}</div>
+          <div class="flex flex-wrap gap-1 shrink-0">${qtypes}</div>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3">
+          <div>
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">Situation / Task</div>
+            <p class="text-gray-300 text-xs leading-relaxed">${s.situation || ''}</p>
+          </div>
+          <div>
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">Actions</div>
+            <ul class="list-disc list-inside space-y-0.5">${actions}</ul>
+          </div>
+          <div>
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">Results</div>
+            <ul class="list-disc list-inside space-y-0.5">${results}</ul>
+          </div>
+          <div>
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">Reflection</div>
+            <p class="text-gray-400 text-xs leading-relaxed italic">${s.reflection || ''}</p>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    function generateStarStory() {
+      const achievement = document.getElementById('star-achievement').value.trim();
+      const qtype = document.getElementById('star-qtype').value;
+      const resultDiv = document.getElementById('star-result');
+
+      if (!achievement) {
+        resultDiv.innerHTML = '<p class="text-red-400 text-xs">Please describe an achievement first.</p>';
+        return;
+      }
+
+      resultDiv.innerHTML = '<div class="flex items-center gap-2 text-gray-400 text-sm"><span class="animate-spin">⟳</span> Generating STAR+R story with AI...</div>';
+
+      fetch('/api/interview/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ achievement, question_type: qtype })
+      })
+      .then(r => r.json())
+      .then(d => {
+        if (!d.success) {
+          resultDiv.innerHTML = `<p class="text-red-400 text-xs">Error: ${d.error}</p>`;
+          return;
+        }
+        resultDiv.innerHTML = '<p class="text-green-400 text-xs">✓ Story generated and saved!</p>';
+        document.getElementById('star-achievement').value = '';
+        // Prepend story to list
+        const container = document.getElementById('star-stories');
+        const existing = container.innerHTML;
+        if (existing.includes('No stories yet') || existing.includes('Loading stories')) {
+          container.innerHTML = renderStory(d.story);
+        } else {
+          container.insertAdjacentHTML('afterbegin', renderStory(d.story));
+        }
+      })
+      .catch(() => {
+        resultDiv.innerHTML = '<p class="text-red-400 text-xs">Network error. Please try again.</p>';
+      });
+    }
+  </script>
 
 </div>
 {% endblock %}

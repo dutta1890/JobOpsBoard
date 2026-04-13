@@ -180,11 +180,29 @@ class CareerOpsAgent:
                 self.stats["successful"] += 1
                 logger.info(f"Applied: {task.company} – {task.role}")
                 self._mark_applied_in_db(task)
+                try:
+                    from services.audit_logger import audit_logger
+                    audit_logger.log_application(
+                        company=task.company,
+                        method=task.method.value if hasattr(task.method, "value") else str(task.method),
+                        success=True,
+                    )
+                except Exception:
+                    pass
             else:
                 task.status = TaskStatus.FAILED
                 task.error = result.get("error", "Unknown error")
                 self.stats["failed"] += 1
                 logger.warning(f"Failed: {task.company} – {result.get('error')}")
+                try:
+                    from services.audit_logger import audit_logger
+                    audit_logger.log_application(
+                        company=task.company,
+                        method=task.method.value if hasattr(task.method, "value") else str(task.method),
+                        success=False,
+                    )
+                except Exception:
+                    pass
 
             self.stats["processed"] += 1
             self.current_task = None

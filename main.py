@@ -142,9 +142,13 @@ def create_app():
         SECRET_KEY, DASHBOARD_PASSWORD,
         login_required, rate_limit as security_rate_limit,
         sanitize_input, sanitize_url,
-        add_security_headers,
+        add_security_headers, make_rate_limiter,
     )
     from services.audit_logger import audit_logger
+
+    # Tighter per-route limits for expensive / sensitive endpoints
+    _evaluate_limit  = make_rate_limiter(max_requests=20, window_seconds=60)
+    _apply_limit     = make_rate_limiter(max_requests=5,  window_seconds=60)
 
     app = Flask(__name__)
     app.config.from_object(Config)
@@ -241,6 +245,7 @@ def create_app():
 
     @app.route("/evaluate", methods=["POST"])
     @login_required
+    @_evaluate_limit
     def evaluate():
         try:
             body = request.get_json(silent=True) or {}
@@ -290,6 +295,15 @@ def create_app():
             result = evaluate_job(text)
 
             if not result["success"]:
+                # Audit-log scam/legitimacy blocks
+                ft = result.get("filter_type")
+                if ft in ("scam", "legitimacy"):
+                    audit_logger.log_scam_detected(
+                        url=url or text[:80],
+                        tier=ft,
+                        red_flags=result.get("scam_check", {}).get("red_flags", [])
+                            or result.get("legitimacy", {}).get("blocks", []),
+                    )
                 return jsonify({"success": False, "error": result.get("error", "Evaluation failed.")}), 500
 
             data = result["data"]
@@ -651,6 +665,7 @@ def create_app():
 
     @app.route("/api/apply-email", methods=["POST"])
     @login_required
+    @_apply_limit
     def apply_email():
         try:
             body = request.get_json(silent=True) or {}
@@ -946,6 +961,37 @@ def create_app():
             return jsonify({"success": False, "error": story["error"]}), 500
         audit_logger.log_agent_action("star_story_generated", achievement[:80])
         return jsonify({"success": True, "story": story})
+
+    # ── Export ─────────────────────────────────────────────────────────────────
+
+    @app.route("/api/export/csv", methods=["GET"])
+    @login_required
+    def export_csv():
+        """Export all applications as a downloadable CSV file."""
+        import csv, io
+        from flask import Response
+        applications = Application.query.order_by(Application.id.desc()).all()
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            "ID", "Company", "Role", "Location", "Platform",
+            "Grade", "Score", "Recommendation", "Visa Sponsorship",
+            "Status", "Applied Date", "URL",
+        ])
+        for a in applications:
+            writer.writerow([
+                a.id, a.company, a.role, a.location or "", a.platform or "",
+                a.grade or "", a.score or "", a.recommendation or "",
+                a.visa_sponsorship or "", a.status or "",
+                a.applied_date.strftime("%Y-%m-%d") if a.applied_date else "",
+                a.url or "",
+            ])
+        output.seek(0)
+        return Response(
+            output.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-Disposition": "attachment; filename=career_ops_applications.csv"},
+        )
 
     @app.route("/api/health")
     def health():
