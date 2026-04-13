@@ -88,6 +88,11 @@ class InterviewPrep:
             story["question_type_input"] = question_type
             story["created_at"] = datetime.now().isoformat()
 
+            # Deduplicate: skip if an 80%+ keyword overlap with an existing story
+            if self._is_duplicate(story):
+                logger.info(f"STAR story skipped (duplicate): {story.get('title', '?')}")
+                return {"duplicate": True, "message": "A very similar story already exists.", "story": story}
+
             self.stories.append(story)
             self._save_stories()
             logger.info(f"STAR story generated: {story.get('title', '?')}")
@@ -117,6 +122,29 @@ class InterviewPrep:
 
     def get_all_stories(self) -> list[dict]:
         return list(self.stories)
+
+    # ── Deduplication ──────────────────────────────────────────────────────────
+
+    def _is_duplicate(self, new_story: dict) -> bool:
+        """Return True if an existing story shares ≥80% keyword overlap."""
+        new_kw = {k.lower() for k in new_story.get("keywords", [])}
+        new_ach = new_story.get("achievement", "").lower()
+        if not new_kw and not new_ach:
+            return False
+        for existing in self.stories:
+            ex_kw = {k.lower() for k in existing.get("keywords", [])}
+            if new_kw and ex_kw:
+                overlap = len(new_kw & ex_kw) / max(len(new_kw), len(ex_kw))
+                if overlap >= 0.80:
+                    return True
+            # Fallback: achievement text similarity (character 4-gram overlap)
+            ex_ach = existing.get("achievement", "").lower()
+            if new_ach and ex_ach:
+                ng = lambda s: {s[i:i+4] for i in range(len(s)-3)}
+                a, b = ng(new_ach), ng(ex_ach)
+                if a and b and len(a & b) / max(len(a), len(b)) >= 0.70:
+                    return True
+        return False
 
     # ── Persistence ────────────────────────────────────────────────────────────
 

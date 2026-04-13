@@ -214,18 +214,30 @@ class LegitimacyChecker:
         )
 
     def _check_ssl(self, domain: str) -> dict:
+        # In-memory cache with 24h TTL — avoids a blocking network call per request
+        if not hasattr(self, "_ssl_cache"):
+            self._ssl_cache: dict = {}
+        cached = self._ssl_cache.get(domain)
+        if cached:
+            result, cached_at = cached
+            if (datetime.now() - cached_at).total_seconds() < 86400:
+                return result
+
         try:
             ctx = ssl.create_default_context()
             with socket.create_connection((domain, 443), timeout=5) as sock:
                 with ctx.wrap_socket(sock, server_hostname=domain) as ssock:
                     cert = ssock.getpeercert()
-                    return {
+                    result = {
                         "valid": True,
                         "issuer": dict(x[0] for x in cert.get("issuer", [])),
                         "expires": cert.get("notAfter", ""),
                     }
         except Exception as exc:
-            return {"valid": False, "error": str(exc)}
+            result = {"valid": False, "error": str(exc)}
+
+        self._ssl_cache[domain] = (result, datetime.now())
+        return result
 
     def _check_domain_age(self, domain: str) -> dict:
         # In-memory cache: domain → (result, cached_at). TTL = 24 hours.

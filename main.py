@@ -137,6 +137,20 @@ def render_error(message: str) -> str:
     </div>"""
 
 
+def _migrate_columns(db_instance) -> None:
+    """Add any new columns that don't exist yet in the live SQLite database."""
+    migrations = [
+        "ALTER TABLE applications ADD COLUMN cover_letter_text TEXT",
+    ]
+    with db_instance.engine.connect() as conn:
+        for stmt in migrations:
+            try:
+                conn.execute(db.text(stmt))
+                conn.commit()
+            except Exception:
+                pass  # Column already exists
+
+
 def create_app():
     from services.security import (
         SECRET_KEY, DASHBOARD_PASSWORD,
@@ -158,6 +172,8 @@ def create_app():
 
     with app.app_context():
         db.create_all()
+        # Migrate: add new columns to existing DBs that pre-date the model change
+        _migrate_columns(db)
         logger.info("Database tables created/verified.")
 
     @app.after_request
@@ -219,26 +235,39 @@ def create_app():
     @app.route("/")
     @login_required
     def index():
-        applications = Application.query.order_by(
-            Application.created_at.desc()
-        ).all()
+        page     = request.args.get("page", 1, type=int)
+        per_page = 20
 
-        total = len(applications)
-        applied = sum(1 for a in applications if a.status == "Applied")
-        interviews = sum(1 for a in applications if a.status == "Interview")
-        scores = [a.score for a in applications if a.score is not None]
-        avg_score = round(sum(scores) / len(scores), 1) if scores else 0
+        pagination = Application.query.order_by(
+            Application.created_at.desc()
+        ).paginate(page=page, per_page=per_page, error_out=False)
+
+        applications = pagination.items
+        all_apps     = Application.query.all()
+
+        total      = len(all_apps)
+        applied    = sum(1 for a in all_apps if a.status == "Applied")
+        interviews = sum(1 for a in all_apps if a.status == "Interview")
+        scores     = [a.score for a in all_apps if a.score is not None]
+        avg_score  = round(sum(scores) / len(scores), 1) if scores else 0
+
+        grade_counts = {g: 0 for g in ["A", "B", "C", "D", "F"]}
+        for a in all_apps:
+            if a.grade and a.grade in grade_counts:
+                grade_counts[a.grade] += 1
 
         stats = {
             "total": total,
             "applied": applied,
             "interviews": interviews,
             "avg_score": avg_score,
+            "grade_counts": grade_counts,
         }
 
         return render_template(
             "index.html",
             applications=applications,
+            pagination=pagination,
             stats=stats,
             today=date.today().strftime("%B %d, %Y"),
         )
@@ -624,6 +653,7 @@ def create_app():
                 app_record = Application.query.get(app_id)
                 if app_record:
                     app_record.cover_generated = True
+                    app_record.cover_letter_text = result.get("full_text", "")
                     db.session.commit()
 
             return jsonify({"success": True, "cover": result})
@@ -649,6 +679,7 @@ def create_app():
             return f'<div class="text-red-400 text-sm p-2">Error: {cover["error"]}</div>'
 
         application.cover_generated = True
+        application.cover_letter_text = cover.get("full_text", "")
         db.session.commit()
 
         full_text = cover.get("full_text", "")
@@ -1036,6 +1067,89 @@ def _scheduled_backup():
 import threading as _threading
 _backup_thread = _threading.Thread(target=_scheduled_backup, daemon=True, name="backup")
 _backup_thread.start()
+
+
+# ── Scheduled inbox scan (every 30 min) ────────────────────────────────────────
+def _send_notification_email(subject: str, body: str) -> None:
+    """Send a plain-text notification email to the configured address."""
+    import smtplib
+    from email.mime.text import MIMEText
+    try:
+        addr = os.environ.get("EMAIL_ADDRESS", "")
+        pwd  = os.environ.get("EMAIL_APP_PASSWORD", "")
+        if not addr or not pwd:
+            return
+        msg = MIMEText(body)
+        msg["Subject"] = subject
+        msg["From"]    = addr
+        msg["To"]      = addr
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as s:
+            s.login(addr, pwd)
+            s.sendmail(addr, [addr], msg.as_string())
+        app.logger.info(f"Notification email sent: {subject}")
+    except Exception as exc:
+        app.logger.warning(f"Notification email failed: {exc}")
+
+
+def _scheduled_inbox_scan():
+    """Background thread: scan inbox every 30 min and notify on new interview invites."""
+    import time as _time
+    _time.sleep(120)  # Wait 2 minutes after startup before first scan
+    _seen_interviews: set = set()
+    while True:
+        try:
+            from services.email_tracker import email_tracker
+            replies = email_tracker.check_replies(days=14)
+            if isinstance(replies, list):
+                new_interviews = [
+                    r for r in replies
+                    if r.get("type") == "interview"
+                    and f"{r.get('from')}|{r.get('subject')}" not in _seen_interviews
+                ]
+                for inv in new_interviews:
+                    key = f"{inv.get('from')}|{inv.get('subject')}"
+                    _seen_interviews.add(key)
+                    _send_notification_email(
+                        subject=f"[Career-Ops] Interview invite: {inv.get('subject', '')}",
+                        body=(
+                            f"Interview invite detected in your inbox.\n\n"
+                            f"From: {inv.get('from', '')}\n"
+                            f"Subject: {inv.get('subject', '')}\n"
+                            f"Date: {inv.get('date', '')}\n\n"
+                            f"Log in to Career-Ops to review and prepare."
+                        ),
+                    )
+                app.logger.info(
+                    f"Inbox scan complete: {len(replies)} replies, "
+                    f"{len(new_interviews)} new interview alerts sent."
+                )
+        except Exception as exc:
+            app.logger.warning(f"Scheduled inbox scan error: {exc}")
+        _time.sleep(30 * 60)
+
+
+_inbox_thread = _threading.Thread(target=_scheduled_inbox_scan, daemon=True, name="inbox_scan")
+_inbox_thread.start()
+
+
+# ── Playwright install check ────────────────────────────────────────────────────
+def _check_playwright() -> None:
+    """Warn at startup if Chromium is not installed (needed for PDF gen + form fill)."""
+    import shutil
+    if not shutil.which("chromium") and not shutil.which("chromium-browser"):
+        try:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as p:
+                p.chromium.launch(headless=True).close()
+        except Exception:
+            app.logger.warning(
+                "Playwright Chromium is NOT installed. "
+                "PDF generation and form-filling will fail. "
+                "Fix: run `python -m playwright install chromium` in the shell."
+            )
+
+
+_threading.Thread(target=_check_playwright, daemon=True, name="playwright_check").start()
 
 
 if __name__ == "__main__":

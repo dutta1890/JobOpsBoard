@@ -57,6 +57,7 @@ class Application(db.Model):
     visa_sponsorship = db.Column(db.String(20))
     evaluation_json = db.Column(db.Text)
     jd_text = db.Column(db.Text)
+    cover_letter_text = db.Column(db.Text)
     status = db.Column(db.String(50), default="Evaluated")
     cv_generated = db.Column(db.Boolean, default=False)
     cover_generated = db.Column(db.Boolean, default=False)
@@ -86,6 +87,7 @@ class Application(db.Model):
             "status": self.status,
             "cv_generated": self.cv_generated,
             "cover_generated": self.cover_generated,
+            "cover_letter_text": self.cover_letter_text,
             "applied_date": self.applied_date.isoformat() if self.applied_date else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "notes": self.notes,
