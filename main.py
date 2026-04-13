@@ -1032,12 +1032,9 @@ def create_app():
     @login_required
     def scanner_start():
         from services.job_scanner import job_scanner
-        body = request.get_json(silent=True) or {}
+        body   = request.get_json(silent=True) or {}
         single = body.get("single_pass", False)
-        if single:
-            result = job_scanner.run_once(app)
-        else:
-            result = job_scanner.start(app)
+        result = job_scanner.run_once(app) if single else job_scanner.start(app)
         return jsonify(result)
 
     @app.route("/scanner/stop", methods=["POST"])
@@ -1051,6 +1048,45 @@ def create_app():
     def scanner_status():
         from services.job_scanner import job_scanner
         return jsonify(job_scanner.get_status())
+
+    @app.route("/scanner/settings", methods=["GET", "POST"])
+    @login_required
+    def scanner_settings_route():
+        from services.job_scanner import JobScanner
+        if request.method == "GET":
+            return jsonify(JobScanner.load_settings())
+        body = request.get_json(silent=True) or {}
+        allowed = {"location", "cv_text", "search_keywords", "auto_start_agent"}
+        update  = {k: v for k, v in body.items() if k in allowed}
+        JobScanner.save_settings(update)
+        return jsonify({"success": True})
+
+    @app.route("/api/scanner/recent")
+    @login_required
+    def scanner_recent_jobs():
+        """Return the most recent jobs found by the auto-scanner."""
+        jobs = (
+            Application.query
+            .filter_by(platform="auto_scan")
+            .order_by(Application.created_at.desc())
+            .limit(30)
+            .all()
+        )
+        result = []
+        for j in jobs:
+            result.append({
+                "id":             j.id,
+                "company":        j.company or "Unknown",
+                "role":           j.role or "",
+                "location":       j.location or "",
+                "grade":          j.grade or "?",
+                "score":          j.score,
+                "recommendation": j.recommendation or "",
+                "status":         j.status or "",
+                "url":            j.url or "",
+                "created_at":     j.created_at.isoformat() if j.created_at else "",
+            })
+        return jsonify({"jobs": result})
 
     # ── Activity log ────────────────────────────────────────────────────────
 

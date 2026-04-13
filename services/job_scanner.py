@@ -1,9 +1,10 @@
 """
 job_scanner.py — Autonomous job discovery engine for Career-Ops.
 
-Crawls company career pages and job sources, finds individual job
-postings, evaluates them against the user's profile, and auto-queues
-grade A/B results into the agent for application.
+Continuously crawls company career pages, filters for Performance
+Marketing roles in the target city, evaluates against the full
+filter stack (age, seniority, scam, legitimacy), saves matches,
+and auto-queues Grade A/B jobs into the agent.
 """
 
 import json
@@ -12,18 +13,19 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, quote
 
 import requests
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-PROFILE_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "profile.json")
-SOURCES_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "job_sources.json")
+PROFILE_PATH         = os.path.join(os.path.dirname(__file__), "..", "data", "profile.json")
+SOURCES_PATH         = os.path.join(os.path.dirname(__file__), "..", "data", "job_sources.json")
+SETTINGS_PATH        = os.path.join(os.path.dirname(__file__), "..", "data", "scanner_settings.json")
 
 HEADERS = {
     "User-Agent": (
@@ -33,44 +35,75 @@ HEADERS = {
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.5",
+    "Connection": "keep-alive",
 }
 
-REQUEST_TIMEOUT = 12
-DELAY_BETWEEN_SOURCES = 2.0
-MAX_JOBS_PER_SOURCE = 8
-SCAN_INTERVAL_HOURS = 3
+REQUEST_TIMEOUT       = 15
+DELAY_BETWEEN_SOURCES = 2.5
+MAX_JOBS_PER_SOURCE   = 8
+SCAN_INTERVAL_HOURS   = 3
 
-JOB_LINK_PATTERNS = re.compile(
-    r"(/job[s]?/|/position[s]?/|/opening[s]?/|/career[s]?/|"
-    r"/vacancy|/vacancies/|/apply/|/requisition|/role[s]?/|"
-    r"/opportunity|/opportunities/|lever\.co/|greenhouse\.io/|"
-    r"workday\.com/|smartrecruiters\.com/|breezy\.hr/|"
-    r"ashbyhq\.com/|jobs\.ashby\.com/|apply\.workable\.com/)",
+# URL patterns that indicate individual job postings
+JOB_LINK_RE = re.compile(
+    r"(/job[s]?/|/position[s]?/|/opening[s]?/|/vacancies?/|/apply/|"
+    r"/requisition|/role[s]?/|/opportunit|/career[s]?/[^/]+$|"
+    r"lever\.co/[^/]+/|greenhouse\.io/|workday\.com/|"
+    r"smartrecruiters\.com/|breezy\.hr/|ashbyhq\.com/|"
+    r"jobs\.ashby\.com/|apply\.workable\.com/|"
+    r"myworkdayjobs\.com/|taleo\.net/|icims\.com/)",
     re.IGNORECASE,
 )
 
-SKIP_PATTERNS = re.compile(
-    r"(linkedin\.com|twitter\.com|facebook\.com|instagram\.com|"
-    r"youtube\.com|whatsapp|mailto:|tel:|javascript:|#|"
-    r"google\.com/maps|apple\.com|android\.com|\.pdf$|\.zip$)",
-    re.IGNORECASE,
-)
-
+# Domains to skip as crawl sources (require login / block crawlers)
 SKIP_SOURCE_DOMAINS = {
     "linkedin.com", "naukri.com", "indeed.com",
     "glassdoor.com", "monster.com", "shine.com",
+    "twitter.com", "facebook.com", "instagram.com",
+    "youtube.com",
 }
+
+# Links to never follow
+SKIP_LINK_RE = re.compile(
+    r"(linkedin\.com|twitter\.com|facebook\.com|instagram\.com|"
+    r"youtube\.com|whatsapp|mailto:|tel:|javascript:|^#|"
+    r"google\.com/maps|\.pdf$|\.zip$|\.png$|\.jpg$|/logout|/login|/signup)",
+    re.IGNORECASE,
+)
+
+# Performance-marketing relevance keywords
+# A discovered job page must contain at least one of these to proceed to Gemini
+PM_KEYWORDS = [
+    "performance marketing", "paid media", "paid search", "paid social",
+    "google ads", "meta ads", "facebook ads", "programmatic",
+    "sem", "ppc", "performance manager", "media manager",
+    "digital marketing manager", "growth marketing", "demand generation",
+    "biddable media", "performance lead", "media lead",
+    "digital performance", "marketing manager",
+]
+
+PM_KEYWORD_RE = re.compile(
+    "|".join(re.escape(k) for k in PM_KEYWORDS),
+    re.IGNORECASE,
+)
+
+# Seniority keywords that disqualify a link before even fetching the page
+SKIP_SENIORITY_RE = re.compile(
+    r"\b(intern|internship|trainee|fresher|junior|jr\.?|"
+    r"entry[- ]level|graduate|apprentice)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
 class ScanStats:
     sources_checked: int = 0
-    jobs_discovered: int = 0
+    links_found: int = 0
+    pm_relevant: int = 0
     jobs_evaluated: int = 0
     jobs_saved: int = 0
     jobs_queued: int = 0
-    jobs_skipped_duplicate: int = 0
-    jobs_skipped_filter: int = 0
+    skipped_duplicate: int = 0
+    skipped_filter: int = 0
     errors: int = 0
     current_source: str = ""
     status: str = "idle"
@@ -82,25 +115,26 @@ class JobScanner:
     def __init__(self):
         self._thread: Optional[threading.Thread] = None
         self._running = False
-        self._lock = threading.Lock()
-        self._app = None
-        self.stats = ScanStats()
+        self._lock   = threading.Lock()
+        self._app    = None
+        self.stats   = ScanStats()
 
-    # ── Public control API ────────────────────────────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────────────
 
     def start(self, app):
+        """Start continuous scanning (repeats every SCAN_INTERVAL_HOURS)."""
         with self._lock:
             if self._running:
                 return {"started": False, "reason": "already_running"}
             self._running = True
-            self._app = app
-            self.stats = ScanStats(status="running")
-            self._thread = threading.Thread(
-                target=self._run_loop, daemon=True, name="job_scanner"
+            self._app     = app
+            self.stats    = ScanStats(status="running")
+            self._thread  = threading.Thread(
+                target=self._continuous_loop, daemon=True, name="job_scanner"
             )
             self._thread.start()
-        logger.info("[JobScanner] Started.")
-        return {"started": True}
+        logger.info("[Scanner] Continuous mode started.")
+        return {"started": True, "mode": "continuous"}
 
     def stop(self):
         with self._lock:
@@ -109,8 +143,29 @@ class JobScanner:
             self._running = False
             self.stats.status = "idle"
             self.stats.current_source = ""
-        logger.info("[JobScanner] Stop requested.")
+        logger.info("[Scanner] Stop requested.")
         return {"stopped": True}
+
+    def run_once(self, app):
+        """Trigger a single scan pass in a background thread."""
+        with self._lock:
+            if self._running:
+                return {"started": False, "reason": "already_running"}
+            self._running = True
+            self._app     = app
+            self.stats    = ScanStats(status="scanning")
+
+        def _once():
+            try:
+                self._scan_pass()
+            finally:
+                with self._lock:
+                    self._running = False
+                    self.stats.status = "idle"
+                    self.stats.current_source = ""
+
+        threading.Thread(target=_once, daemon=True, name="scanner_once").start()
+        return {"started": True, "mode": "single_pass"}
 
     @property
     def is_running(self) -> bool:
@@ -120,288 +175,255 @@ class JobScanner:
         s = self.stats
         return {
             "is_running": self._running,
-            "status": s.status,
+            "status":     s.status,
             "current_source": s.current_source,
             "last_run_start": s.last_run_start,
-            "last_run_end": s.last_run_end,
+            "last_run_end":   s.last_run_end,
             "stats": {
                 "sources_checked": s.sources_checked,
-                "jobs_discovered": s.jobs_discovered,
-                "jobs_evaluated": s.jobs_evaluated,
-                "jobs_saved": s.jobs_saved,
-                "jobs_queued": s.jobs_queued,
-                "jobs_skipped_duplicate": s.jobs_skipped_duplicate,
-                "jobs_skipped_filter": s.jobs_skipped_filter,
-                "errors": s.errors,
+                "links_found":     s.links_found,
+                "pm_relevant":     s.pm_relevant,
+                "jobs_evaluated":  s.jobs_evaluated,
+                "jobs_saved":      s.jobs_saved,
+                "jobs_queued":     s.jobs_queued,
+                "skipped_duplicate": s.skipped_duplicate,
+                "skipped_filter":    s.skipped_filter,
+                "errors":            s.errors,
             },
         }
 
-    def run_once(self, app):
-        """Trigger a single scan pass (non-blocking, spawns a thread)."""
-        with self._lock:
-            if self._running:
-                return {"started": False, "reason": "scan_already_running"}
-            self._running = True
-            self._app = app
-            self.stats = ScanStats(status="running")
+    # ── Settings helpers ──────────────────────────────────────────────────────
 
-        def _once():
-            try:
-                self._scan_all()
-            finally:
-                with self._lock:
-                    self._running = False
-                    self.stats.status = "idle"
-                    self.stats.current_source = ""
+    @staticmethod
+    def load_settings() -> dict:
+        try:
+            with open(SETTINGS_PATH) as f:
+                return json.load(f)
+        except Exception:
+            return {}
 
-        t = threading.Thread(target=_once, daemon=True, name="job_scanner_once")
-        t.start()
-        return {"started": True, "mode": "single_pass"}
+    @staticmethod
+    def save_settings(data: dict) -> None:
+        current = {}
+        try:
+            with open(SETTINGS_PATH) as f:
+                current = json.load(f)
+        except Exception:
+            pass
+        current.update(data)
+        with open(SETTINGS_PATH, "w") as f:
+            json.dump(current, f, indent=2)
 
-    # ── Internal loop ─────────────────────────────────────────────────────────
+    # ── Internal loops ────────────────────────────────────────────────────────
 
-    def _run_loop(self):
+    def _continuous_loop(self):
         while self._running:
-            self._scan_all()
-            # Sleep between full passes, checking for stop signal
-            sleep_seconds = SCAN_INTERVAL_HOURS * 3600
+            self._scan_pass()
+            self.stats.status = "waiting"
+            # Sleep in small increments so stop() is responsive
+            sleep_total = SCAN_INTERVAL_HOURS * 3600
             slept = 0
-            while slept < sleep_seconds and self._running:
-                time.sleep(5)
-                slept += 5
+            while slept < sleep_total and self._running:
+                time.sleep(10)
+                slept += 10
         self.stats.status = "idle"
 
-    def _scan_all(self):
+    def _scan_pass(self):
         self.stats.last_run_start = datetime.now().isoformat()
-        self.stats.status = "scanning"
-        logger.info("[JobScanner] Scan pass started.")
+        self.stats.status         = "scanning"
+        settings = self.load_settings()
+        location = settings.get("location", "")
+        auto_start_agent = settings.get("auto_start_agent", True)
 
-        sources = self._load_sources()
-        logger.info(f"[JobScanner] {len(sources)} sources to check.")
+        sources = self._build_source_list(location)
+        logger.info(f"[Scanner] Pass started — {len(sources)} sources, city: {location or 'any'}")
 
-        for source in sources:
+        for src in sources:
             if not self._running:
                 break
             try:
-                self._process_source(source)
+                self._process_source(src, settings)
             except Exception as exc:
-                logger.warning(f"[JobScanner] Error on source {source.get('name')}: {exc}")
+                logger.warning(f"[Scanner] Error on {src['name']}: {exc}")
                 self.stats.errors += 1
             time.sleep(DELAY_BETWEEN_SOURCES)
 
         self.stats.last_run_end = datetime.now().isoformat()
         self.stats.current_source = ""
-        self.stats.status = "idle" if not self._running else "waiting"
+
+        # Auto-start the agent if we queued anything
+        if auto_start_agent and self.stats.jobs_queued > 0 and self._app:
+            try:
+                from services.agent import career_agent
+                if not career_agent.is_running:
+                    career_agent.start(self._app)
+                    logger.info("[Scanner] Auto-started agent.")
+            except Exception as e:
+                logger.warning(f"[Scanner] Could not auto-start agent: {e}")
+
         logger.info(
-            f"[JobScanner] Pass complete. "
-            f"Checked: {self.stats.sources_checked}, "
-            f"Found: {self.stats.jobs_discovered}, "
-            f"Saved: {self.stats.jobs_saved}, "
-            f"Queued: {self.stats.jobs_queued}"
+            f"[Scanner] Pass done — sources:{self.stats.sources_checked} "
+            f"links:{self.stats.links_found} pm:{self.stats.pm_relevant} "
+            f"saved:{self.stats.jobs_saved} queued:{self.stats.jobs_queued}"
         )
 
-    # ── Source loading ────────────────────────────────────────────────────────
+    # ── Source list building ──────────────────────────────────────────────────
 
-    def _load_sources(self) -> list:
-        """Return a flat list of crawlable sources with their URLs."""
+    def _build_source_list(self, location: str) -> list:
         try:
             with open(SOURCES_PATH) as f:
                 data = json.load(f)
         except Exception as e:
-            logger.error(f"[JobScanner] Could not load sources: {e}")
+            logger.error(f"[Scanner] Cannot load sources: {e}")
             return []
 
-        profile = self._load_profile()
-        query = self._build_search_query(profile)
-        locations = self._build_location_list(profile)
+        settings = self.load_settings()
+        keywords = settings.get("search_keywords", ["Performance Marketing"])
+        query    = keywords[0] if keywords else "Performance Marketing"
 
         sources = []
+        seen_urls: set = set()
 
-        # ── Company career pages ───────────────────────────────────────────────
-        for sector_key, items in data.items():
-            if not isinstance(items, list):
-                continue
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                careers_url = item.get("careers") or item.get("url")
-                if not careers_url:
-                    continue
-                if any(skip in careers_url for skip in SKIP_SOURCE_DOMAINS):
-                    continue
-                if not careers_url.startswith("http"):
-                    careers_url = "https://" + careers_url
-                sources.append({
-                    "name": item.get("name", careers_url),
-                    "url": careers_url,
-                    "type": "career_page",
-                })
+        def _add(name, url, stype):
+            if not url:
+                return
+            if any(d in url for d in SKIP_SOURCE_DOMAINS):
+                return
+            if not url.startswith("http"):
+                url = "https://" + url
+            if url in seen_urls:
+                return
+            seen_urls.add(url)
+            sources.append({"name": name, "url": url, "type": stype})
 
-        # ── Regional portals with search_url templates ──────────────────────
-        portals = data.get("job_portals", {})
-        for region, portal_list in portals.items():
-            if not isinstance(portal_list, list):
-                continue
-            for portal in portal_list:
+        # Company career pages (flat lists)
+        flat_sector_keys = [
+            "tech_platforms", "d2c_brands", "ecommerce", "quick_commerce",
+            "fmcg_cpg", "consulting", "b2b_saas", "fintech", "uae_conglomerates",
+            "edtech", "travel_hospitality",
+        ]
+        for key in flat_sector_keys:
+            for item in data.get(key, []):
+                if isinstance(item, dict):
+                    careers = item.get("careers") or item.get("url", "")
+                    _add(item.get("name", careers), careers, "career_page")
+
+        # Nested regional: agency_networks, boutique_agencies
+        for top_key in ["agency_networks", "boutique_agencies"]:
+            region_map = data.get(top_key, {})
+            if isinstance(region_map, dict):
+                for region_list in region_map.values():
+                    for item in (region_list if isinstance(region_list, list) else []):
+                        if isinstance(item, dict):
+                            careers = item.get("careers") or item.get("url", "")
+                            _add(item.get("name", careers), careers, "career_page")
+
+        # VC portfolio job boards
+        for item in data.get("vc_portfolio_jobs", []):
+            if isinstance(item, dict):
+                url = item.get("url", "")
+                _add(item.get("name", url), url, "career_page")
+
+        # Job portals with search_url templates (skip blocked ones)
+        loc_param = location or "India"
+        for region, portal_list in data.get("job_portals", {}).items():
+            for portal in (portal_list if isinstance(portal_list, list) else []):
                 if not isinstance(portal, dict):
                     continue
-                search_url_tpl = portal.get("search_url", "")
-                if not search_url_tpl:
+                tpl = portal.get("search_url", "")
+                if not tpl:
                     continue
-                domain = portal.get("url", "")
-                if any(skip in domain for skip in SKIP_SOURCE_DOMAINS):
+                base_url = portal.get("url", "")
+                if any(d in base_url for d in SKIP_SOURCE_DOMAINS):
                     continue
-                # Build one search URL per location
-                loc = locations[0] if locations else "India"
-                url = (
-                    search_url_tpl
-                    .replace("{query}", requests.utils.quote(query))
-                    .replace("{location}", requests.utils.quote(loc))
-                )
-                sources.append({
-                    "name": portal.get("name", domain),
-                    "url": url,
-                    "type": "search_results",
-                })
+                url = tpl.replace("{query}", quote(query)).replace("{location}", quote(loc_param))
+                _add(portal.get("name", base_url), url, "search_results")
 
-        # ── Nested regional categories ────────────────────────────────────────
-        for top_key in ["boutique_agencies", "agency_networks"]:
-            region_map = data.get(top_key, {})
-            if not isinstance(region_map, dict):
-                continue
-            for region, items in region_map.items():
-                if not isinstance(items, list):
-                    continue
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    careers_url = item.get("careers") or item.get("url")
-                    if not careers_url:
-                        continue
-                    if any(skip in careers_url for skip in SKIP_SOURCE_DOMAINS):
-                        continue
-                    if not careers_url.startswith("http"):
-                        careers_url = "https://" + careers_url
-                    sources.append({
-                        "name": item.get("name", careers_url),
-                        "url": careers_url,
-                        "type": "career_page",
-                    })
-
-        # Deduplicate by URL
-        seen = set()
-        unique = []
-        for s in sources:
-            if s["url"] not in seen:
-                seen.add(s["url"])
-                unique.append(s)
-
-        return unique
-
-    def _load_profile(self) -> dict:
-        try:
-            with open(PROFILE_PATH) as f:
-                return json.load(f)
-        except Exception:
-            return {}
-
-    def _build_search_query(self, profile: dict) -> str:
-        roles = profile.get("target_roles", [])
-        if roles:
-            return roles[0]
-        return profile.get("title", "Performance Marketing Manager")
-
-    def _build_location_list(self, profile: dict) -> list:
-        locs = profile.get("target_locations", {})
-        result = []
-        for region, info in locs.items():
-            cities = info.get("cities", []) if isinstance(info, dict) else []
-            result.extend(cities)
-        if not result:
-            result.append(profile.get("location", "India"))
-        return result
+        return sources
 
     # ── Per-source processing ─────────────────────────────────────────────────
 
-    def _process_source(self, source: dict):
+    def _process_source(self, source: dict, settings: dict):
         name = source["name"]
-        url = source["url"]
+        url  = source["url"]
         self.stats.current_source = name
         self.stats.sources_checked += 1
 
-        logger.info(f"[JobScanner] Checking: {name}")
+        location = settings.get("location", "")
+        logger.debug(f"[Scanner] Checking: {name}")
 
         job_links = self._find_job_links(url, source["type"])
         if not job_links:
             return
 
-        self.stats.jobs_discovered += len(job_links)
-        logger.info(f"[JobScanner] Found {len(job_links)} links on {name}")
+        self.stats.links_found += len(job_links)
+
+        # Filter by location in URL/text if location is set
+        if location:
+            job_links = self._filter_by_location(job_links, location)
 
         for job_url in job_links[:MAX_JOBS_PER_SOURCE]:
             if not self._running:
                 break
-            self._evaluate_and_queue(job_url)
+            self._evaluate_and_queue(job_url, settings)
             time.sleep(1.5)
 
     def _find_job_links(self, page_url: str, source_type: str) -> list:
-        """Fetch a page and extract links that look like individual job postings."""
+        """Fetch a page and return job-posting links, pre-filtered for PM relevance."""
         try:
-            resp = requests.get(page_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-            if resp.status_code != 200:
+            resp = requests.get(page_url, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+            if resp.status_code not in (200, 301, 302):
                 return []
         except Exception as exc:
-            logger.debug(f"[JobScanner] Fetch failed for {page_url}: {exc}")
+            logger.debug(f"[Scanner] Fetch failed {page_url}: {exc}")
             return []
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+        soup      = BeautifulSoup(resp.text, "html.parser")
         base_domain = urlparse(page_url).netloc
+        links: set = set()
 
-        links = set()
         for tag in soup.find_all("a", href=True):
             href = tag["href"].strip()
             if not href:
                 continue
-
             abs_url = urljoin(page_url, href)
-
-            if SKIP_PATTERNS.search(abs_url):
+            if SKIP_LINK_RE.search(abs_url):
                 continue
 
-            # For search result pages: accept any external job board link
-            if source_type == "search_results":
-                if JOB_LINK_PATTERNS.search(abs_url):
-                    links.add(abs_url)
+            anchor_text = (tag.get_text(separator=" ") or "").strip()
+
+            # Skip clearly junior/intern links
+            if SKIP_SENIORITY_RE.search(anchor_text) or SKIP_SENIORITY_RE.search(abs_url):
                 continue
 
-            # For career pages: look for job links on same domain OR known ATS platforms
             parsed = urlparse(abs_url)
-            is_same_domain = (
+            same_domain = (
                 parsed.netloc == base_domain
                 or parsed.netloc.endswith("." + base_domain)
                 or base_domain.endswith("." + parsed.netloc)
             )
-            is_known_ats = JOB_LINK_PATTERNS.search(abs_url)
+            is_known_ats = JOB_LINK_RE.search(abs_url)
 
-            if is_same_domain or is_known_ats:
-                if JOB_LINK_PATTERNS.search(abs_url) or self._looks_like_job_link(tag):
+            if source_type == "search_results":
+                if is_known_ats:
+                    links.add(abs_url)
+            else:
+                if (same_domain or is_known_ats) and JOB_LINK_RE.search(abs_url):
                     links.add(abs_url)
 
         return list(links)
 
-    def _looks_like_job_link(self, tag) -> bool:
-        """Check anchor text for job-related keywords."""
-        text = (tag.get_text() or "").strip().lower()
-        keywords = [
-            "apply", "view job", "see job", "job detail", "open position",
-            "apply now", "view role", "see opening", "learn more",
-        ]
-        return any(kw in text for kw in keywords)
+    def _filter_by_location(self, links: list, location: str) -> list:
+        """Keep links that mention the target city in their URL (best effort)."""
+        city_slug = location.lower().replace(" ", "[-_]?")
+        city_re   = re.compile(city_slug, re.IGNORECASE)
+        matched   = [l for l in links if city_re.search(l)]
+        # If none matched, return all (location appears in JD text, not URL)
+        return matched if matched else links
 
     # ── Evaluation + auto-queue ───────────────────────────────────────────────
 
-    def _evaluate_and_queue(self, job_url: str):
-        """Run a discovered URL through the full evaluation pipeline."""
+    def _evaluate_and_queue(self, job_url: str, settings: dict):
         if not self._app:
             return
 
@@ -413,48 +435,84 @@ class JobScanner:
                 from services.gemini_client import evaluate_job
                 from services.dedup import is_duplicate as check_dup
 
-                # Layer 1: URL already scanned?
+                # Layer 0: already scanned?
                 if ScanHistory.query.filter_by(url=job_url).first():
-                    self.stats.jobs_skipped_duplicate += 1
+                    self.stats.skipped_duplicate += 1
                     return
 
-                # Parse the job URL
+                # Fetch and extract the job text
                 parsed = parse_job_input(job_url)
                 if not parsed.get("success") or not parsed.get("text"):
                     self.stats.errors += 1
                     return
 
                 text = parsed["text"]
-                url = parsed.get("url") or job_url
+                url  = parsed.get("url") or job_url
 
-                # Run AI evaluation
+                # ── PM relevance pre-filter ────────────────────────────────
+                # Only send to Gemini if the page text has PM keywords
+                if not PM_KEYWORD_RE.search(text):
+                    logger.debug(f"[Scanner] No PM keywords — skipped: {url}")
+                    self.stats.skipped_filter += 1
+                    # Still record the URL so we don't try it again
+                    try:
+                        db.session.add(ScanHistory(
+                            url=url, platform="auto_scan",
+                            scanned_at=datetime.utcnow(), result="not_pm",
+                        ))
+                        db.session.commit()
+                    except Exception:
+                        db.session.rollback()
+                    return
+
+                self.stats.pm_relevant += 1
+
+                # ── Location pre-filter ────────────────────────────────────
+                city = settings.get("location", "")
+                if city:
+                    city_re = re.compile(re.escape(city), re.IGNORECASE)
+                    # Also check remote/hybrid
+                    remote_re = re.compile(r"\b(remote|hybrid|work from home|wfh)\b", re.IGNORECASE)
+                    if not city_re.search(text) and not remote_re.search(text):
+                        logger.debug(f"[Scanner] City '{city}' not in JD — skipped: {url}")
+                        self.stats.skipped_filter += 1
+                        try:
+                            db.session.add(ScanHistory(
+                                url=url, platform="auto_scan",
+                                scanned_at=datetime.utcnow(), result="wrong_location",
+                            ))
+                            db.session.commit()
+                        except Exception:
+                            db.session.rollback()
+                        return
+
+                # ── Full AI evaluation (includes age + seniority + scam filters) ──
                 result = evaluate_job(text)
                 self.stats.jobs_evaluated += 1
 
                 if not result.get("success"):
-                    self.stats.jobs_skipped_filter += 1
-                    logger.debug(
-                        f"[JobScanner] Filtered: {url} — {result.get('filter_type','?')}"
-                    )
+                    ft = result.get("filter_type", "unknown")
+                    logger.debug(f"[Scanner] Filtered ({ft}): {url}")
+                    self.stats.skipped_filter += 1
                     return
 
-                data = result["data"]
-                grade = data.get("grade", "F")
-                company = data.get("company", "Unknown")
-                role = data.get("role", "Unknown")
+                data     = result["data"]
+                grade    = data.get("grade", "F")
+                company  = data.get("company", "Unknown")
+                role     = data.get("role", "Unknown")
                 location = data.get("location", "")
                 score_raw = data.get("score")
-                score = float(score_raw) if score_raw is not None else None
+                score    = float(score_raw) if score_raw is not None else None
 
-                logger.info(f"[JobScanner] Evaluated: {company} | {role} | Grade {grade}")
+                logger.info(f"[Scanner] {company} | {role} | Grade {grade}")
 
-                # Dedup check
+                # Dedup layers 2 & 3
                 dedup = check_dup(url, company, role, location)
                 if dedup["is_duplicate"]:
-                    self.stats.jobs_skipped_duplicate += 1
+                    self.stats.skipped_duplicate += 1
                     return
 
-                # Save to database
+                # Save JobPosting
                 posting = JobPosting(
                     job_hash=dedup["job_hash"],
                     company_normalized=_normalize(company),
@@ -486,19 +544,14 @@ class JobScanner:
                     status="Evaluated",
                 )
                 db.session.add(application)
-
-                if url:
-                    db.session.add(ScanHistory(
-                        url=url,
-                        platform="auto_scan",
-                        scanned_at=datetime.utcnow(),
-                        result="new",
-                    ))
-
+                db.session.add(ScanHistory(
+                    url=url, platform="auto_scan",
+                    scanned_at=datetime.utcnow(), result="new",
+                ))
                 db.session.commit()
                 self.stats.jobs_saved += 1
 
-                # Auto-queue grade A or B into the agent
+                # Auto-queue if Grade A or B
                 if grade in ("A", "B"):
                     try:
                         from services.agent import career_agent
@@ -511,14 +564,12 @@ class JobScanner:
                         )
                         if task is not None:
                             self.stats.jobs_queued += 1
-                            logger.info(
-                                f"[JobScanner] Auto-queued: {company} | {role} | Grade {grade}"
-                            )
+                            logger.info(f"[Scanner] Queued for application: {company}")
                     except Exception as e:
-                        logger.warning(f"[JobScanner] Could not queue {company}: {e}")
+                        logger.warning(f"[Scanner] Queue error: {e}")
 
             except Exception as exc:
-                logger.warning(f"[JobScanner] Error evaluating {job_url}: {exc}")
+                logger.warning(f"[Scanner] Eval error {job_url}: {exc}")
                 self.stats.errors += 1
                 try:
                     db.session.rollback()

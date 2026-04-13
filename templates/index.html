@@ -273,7 +273,51 @@
     updateAgentUI();
   </script>
 
-  <!-- Job Scanner Panel -->
+  <!-- ══ SCANNER SETTINGS ══════════════════════════════════════════════════ -->
+  <div class="bg-gray-800 border border-gray-700 rounded-xl p-5">
+    <h3 class="text-lg font-semibold mb-4">⚙️ Scanner Settings</h3>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+
+      <!-- Location -->
+      <div>
+        <label class="block text-xs text-gray-400 mb-1.5 font-medium">Target City</label>
+        <input id="setting-location" type="text" placeholder="e.g. Mumbai, Dubai, Singapore"
+          class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200
+                 placeholder-gray-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"/>
+        <p class="text-xs text-gray-600 mt-1">Scanner will only keep jobs in this city (+ remote/hybrid).</p>
+      </div>
+
+      <!-- Search keywords -->
+      <div>
+        <label class="block text-xs text-gray-400 mb-1.5 font-medium">Search Keywords <span class="text-gray-600">(comma-separated)</span></label>
+        <input id="setting-keywords" type="text" placeholder="Performance Marketing, Paid Media, Media Manager"
+          class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200
+                 placeholder-gray-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"/>
+        <p class="text-xs text-gray-600 mt-1">Used for portal search queries and relevance filtering.</p>
+      </div>
+
+    </div>
+
+    <!-- CV -->
+    <div class="mt-4">
+      <label class="block text-xs text-gray-400 mb-1.5 font-medium">Your CV / Resume <span class="text-gray-600">(plain text — used for cover letters and form auto-fill)</span></label>
+      <textarea id="setting-cv" rows="6"
+        placeholder="Paste your CV text here…"
+        class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200
+               placeholder-gray-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 resize-y"
+      ></textarea>
+    </div>
+
+    <div class="mt-3 flex items-center gap-3">
+      <button onclick="saveSettings()"
+        class="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors">
+        Save Settings
+      </button>
+      <span id="settings-saved-msg" class="text-xs text-green-400 hidden">✓ Saved</span>
+    </div>
+  </div>
+
+  <!-- ══ JOB SCANNER CONTROL ════════════════════════════════════════════════ -->
   <div class="bg-gray-800 rounded-xl p-5 border border-gray-700">
     <div class="flex justify-between items-start mb-4">
       <div>
@@ -281,16 +325,18 @@
           🔎 Job Scanner
           <span id="scanner-badge" class="px-2 py-0.5 text-xs rounded bg-gray-700 text-gray-400">Idle</span>
         </h3>
-        <p class="text-gray-400 text-sm mt-0.5">Auto-finds jobs from company sites &amp; sources, evaluates &amp; queues them</p>
+        <p class="text-gray-400 text-sm mt-0.5">
+          Continuously finds Performance Marketing jobs, evaluates them, and auto-queues Grade A &amp; B for the agent
+        </p>
       </div>
       <div class="flex gap-2 shrink-0">
         <button onclick="scanOnce()" id="scan-once-btn"
           class="bg-indigo-600 hover:bg-indigo-700 px-3 py-2 rounded text-sm font-medium transition-colors">
-          ▶ Scan Now
+          ▶ Scan Once
         </button>
         <button onclick="startScanner()" id="scanner-start-btn"
           class="bg-green-600 hover:bg-green-700 px-3 py-2 rounded text-sm font-medium transition-colors">
-          🔁 Auto
+          🔁 Continuous
         </button>
         <button onclick="stopScanner()" id="scanner-stop-btn"
           class="bg-red-600 hover:bg-red-700 px-3 py-2 rounded text-sm font-medium transition-colors hidden">
@@ -299,43 +345,79 @@
       </div>
     </div>
 
-    <!-- Scanner stats grid -->
-    <div class="grid grid-cols-4 gap-3 mb-4">
-      <div class="bg-gray-700 rounded-lg p-3 text-center">
+    <!-- Stats grid -->
+    <div class="grid grid-cols-5 gap-2 mb-4">
+      <div class="bg-gray-700 rounded-lg p-2.5 text-center">
         <div id="sc-sources" class="text-xl font-bold text-white">0</div>
         <div class="text-gray-400 text-xs mt-0.5">Sources</div>
       </div>
-      <div class="bg-indigo-900/60 rounded-lg p-3 text-center">
-        <div id="sc-found" class="text-xl font-bold text-indigo-300">0</div>
-        <div class="text-gray-400 text-xs mt-0.5">Found</div>
+      <div class="bg-gray-700/60 rounded-lg p-2.5 text-center">
+        <div id="sc-links" class="text-xl font-bold text-gray-300">0</div>
+        <div class="text-gray-400 text-xs mt-0.5">Links</div>
       </div>
-      <div class="bg-green-900/60 rounded-lg p-3 text-center">
+      <div class="bg-indigo-900/60 rounded-lg p-2.5 text-center">
+        <div id="sc-pm" class="text-xl font-bold text-indigo-300">0</div>
+        <div class="text-gray-400 text-xs mt-0.5">PM Relevant</div>
+      </div>
+      <div class="bg-green-900/60 rounded-lg p-2.5 text-center">
         <div id="sc-saved" class="text-xl font-bold text-green-300">0</div>
         <div class="text-gray-400 text-xs mt-0.5">Saved</div>
       </div>
-      <div class="bg-yellow-900/60 rounded-lg p-3 text-center">
+      <div class="bg-yellow-900/60 rounded-lg p-2.5 text-center">
         <div id="sc-queued" class="text-xl font-bold text-yellow-300">0</div>
         <div class="text-gray-400 text-xs mt-0.5">Queued</div>
       </div>
     </div>
 
-    <!-- Current source being checked -->
-    <div id="scanner-current" class="hidden bg-gray-900 rounded-lg p-3 border border-gray-700">
-      <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">Now scanning:</div>
+    <!-- Currently scanning -->
+    <div id="scanner-current" class="hidden bg-gray-900 rounded-lg p-3 border border-gray-700 mb-3">
+      <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">Now checking:</div>
       <div class="text-sm text-indigo-300 flex items-center gap-2">
         <span class="animate-pulse text-indigo-400">●</span>
-        <span id="scanner-current-text"></span>
+        <span id="scanner-current-text" class="truncate"></span>
       </div>
     </div>
 
-    <p class="text-xs text-gray-600 mt-3">
-      <span class="text-yellow-600">Note:</span>
-      LinkedIn, Naukri &amp; Indeed require manual login — the scanner skips these and focuses on direct company career pages.
-      When a Grade A or B job is found, it is automatically queued into the agent above.
+    <p class="text-xs text-gray-600">
+      <span class="text-yellow-600">Filters active:</span>
+      job age ≤7 days · no junior/intern · PM keywords required · target city matched · scam detection · seniority check.
+      LinkedIn/Naukri/Indeed skipped (require login). When Grade A/B found, agent starts automatically.
     </p>
   </div>
 
   <script>
+    // ── Settings ──────────────────────────────────────────────────────────────
+    function loadSettings() {
+      fetch('/scanner/settings')
+        .then(r => r.json())
+        .then(s => {
+          document.getElementById('setting-location').value  = s.location || '';
+          document.getElementById('setting-cv').value        = s.cv_text  || '';
+          const kw = Array.isArray(s.search_keywords) ? s.search_keywords.join(', ') : (s.search_keywords || '');
+          document.getElementById('setting-keywords').value  = kw;
+        }).catch(() => {});
+    }
+    function saveSettings() {
+      const kwRaw = document.getElementById('setting-keywords').value;
+      const kws   = kwRaw.split(',').map(k => k.trim()).filter(Boolean);
+      const body  = {
+        location:        document.getElementById('setting-location').value.trim(),
+        cv_text:         document.getElementById('setting-cv').value.trim(),
+        search_keywords: kws.length ? kws : ['Performance Marketing'],
+      };
+      fetch('/scanner/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then(r => r.json()).then(() => {
+        const msg = document.getElementById('settings-saved-msg');
+        msg.classList.remove('hidden');
+        setTimeout(() => msg.classList.add('hidden'), 3000);
+      });
+    }
+    loadSettings();
+
+    // ── Scanner control ───────────────────────────────────────────────────────
     function startScanner() {
       fetch('/scanner/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
         .then(r => r.json()).then(updateScannerUI);
@@ -345,26 +427,25 @@
     }
     function scanOnce() {
       fetch('/scanner/start', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
+        method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ single_pass: true })
       }).then(r => r.json()).then(updateScannerUI);
     }
+
     function updateScannerUI() {
       fetch('/scanner/status')
         .then(r => r.json())
         .then(data => {
-          const badge        = document.getElementById('scanner-badge');
-          const startBtn     = document.getElementById('scanner-start-btn');
-          const stopBtn      = document.getElementById('scanner-stop-btn');
-          const onceBtn      = document.getElementById('scan-once-btn');
-          const currentBox   = document.getElementById('scanner-current');
-          const currentText  = document.getElementById('scanner-current-text');
+          const badge      = document.getElementById('scanner-badge');
+          const startBtn   = document.getElementById('scanner-start-btn');
+          const stopBtn    = document.getElementById('scanner-stop-btn');
+          const onceBtn    = document.getElementById('scan-once-btn');
+          const currentBox = document.getElementById('scanner-current');
           const s = data.stats || {};
 
           if (data.is_running) {
-            const label = data.status === 'scanning' ? 'Scanning…' : 'Waiting';
-            badge.textContent = label;
+            const lbl = data.status === 'scanning' ? 'Scanning…' : 'Waiting next pass…';
+            badge.textContent = lbl;
             badge.className   = 'px-2 py-0.5 text-xs rounded bg-indigo-900 text-indigo-300';
             startBtn.classList.add('hidden');
             onceBtn.classList.add('hidden');
@@ -378,22 +459,103 @@
           }
 
           document.getElementById('sc-sources').textContent = s.sources_checked || 0;
-          document.getElementById('sc-found').textContent   = s.jobs_discovered  || 0;
-          document.getElementById('sc-saved').textContent   = s.jobs_saved       || 0;
-          document.getElementById('sc-queued').textContent  = s.jobs_queued      || 0;
+          document.getElementById('sc-links').textContent   = s.links_found     || 0;
+          document.getElementById('sc-pm').textContent      = s.pm_relevant     || 0;
+          document.getElementById('sc-saved').textContent   = s.jobs_saved      || 0;
+          document.getElementById('sc-queued').textContent  = s.jobs_queued     || 0;
 
           if (data.current_source) {
             currentBox.classList.remove('hidden');
-            currentText.textContent = data.current_source;
+            document.getElementById('scanner-current-text').textContent = data.current_source;
           } else {
             currentBox.classList.add('hidden');
           }
-        })
-        .catch(() => {});
+        }).catch(() => {});
     }
 
     setInterval(updateScannerUI, 4000);
     updateScannerUI();
+  </script>
+
+  <!-- ══ JOBS FOUND BY SCANNER ══════════════════════════════════════════════ -->
+  <div class="bg-gray-800 border border-gray-700 rounded-xl p-5">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h3 class="text-lg font-semibold">📥 Jobs Found by Scanner</h3>
+        <p class="text-xs text-gray-400 mt-0.5">All Performance Marketing jobs discovered automatically — Grade A &amp; B are already queued for the agent</p>
+      </div>
+      <span id="found-count" class="text-xs text-gray-500"></span>
+    </div>
+    <div id="found-jobs-list" class="space-y-2 max-h-96 overflow-y-auto pr-1">
+      <p class="text-gray-500 text-sm">No scanner jobs yet. Click <strong class="text-indigo-400">▶ Scan Once</strong> or <strong class="text-green-400">🔁 Continuous</strong> above to start.</p>
+    </div>
+  </div>
+
+  <script>
+    const gradeColors = {
+      A: 'bg-green-900 text-green-300', B: 'bg-blue-900 text-blue-300',
+      C: 'bg-yellow-900 text-yellow-300', D: 'bg-orange-900 text-orange-300',
+      F: 'bg-red-900 text-red-300', '?': 'bg-gray-700 text-gray-400',
+    };
+    const recColors = {
+      Apply: 'text-green-400', Consider: 'text-yellow-400', Skip: 'text-red-400',
+    };
+
+    function relTime(ts) {
+      if (!ts) return '';
+      const d = new Date(ts), diff = Math.round((Date.now() - d) / 1000);
+      if (diff < 60)    return diff + 's ago';
+      if (diff < 3600)  return Math.floor(diff/60)  + 'm ago';
+      if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+      return Math.floor(diff/86400) + 'd ago';
+    }
+
+    function refreshFoundJobs() {
+      fetch('/api/scanner/recent')
+        .then(r => r.json())
+        .then(data => {
+          const jobs = data.jobs || [];
+          const list = document.getElementById('found-jobs-list');
+          document.getElementById('found-count').textContent = jobs.length ? jobs.length + ' jobs' : '';
+
+          if (!jobs.length) {
+            list.innerHTML = '<p class="text-gray-500 text-sm">No scanner jobs yet. Click <strong class="text-indigo-400">▶ Scan Once</strong> or <strong class="text-green-400">🔁 Continuous</strong> above to start.</p>';
+            return;
+          }
+
+          list.innerHTML = jobs.map(j => {
+            const gc  = gradeColors[j.grade] || gradeColors['?'];
+            const rec = recColors[j.recommendation] || 'text-gray-400';
+            const score = j.score != null ? j.score.toFixed(2) : '—';
+            const statusBadge = j.status === 'Applied'
+              ? '<span class="px-1.5 py-0.5 bg-green-900 text-green-300 rounded text-xs">Applied</span>'
+              : j.status === 'Queued' || j.status === 'Processing'
+              ? '<span class="px-1.5 py-0.5 bg-blue-900 text-blue-300 rounded text-xs">In Queue</span>'
+              : '';
+            const link = j.url
+              ? `<a href="${j.url}" target="_blank" class="text-indigo-400 hover:text-indigo-300 text-xs">↗ View</a>`
+              : '';
+            return `<div class="flex items-start justify-between gap-3 bg-gray-900 rounded-lg px-4 py-3 border border-gray-700">
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="px-2 py-0.5 rounded text-xs font-bold ${gc}">${j.grade}</span>
+                  <span class="text-sm font-medium text-white truncate">${j.company}</span>
+                  ${statusBadge}
+                </div>
+                <p class="text-xs text-gray-400 mt-0.5 truncate">${j.role}${j.location ? ' · ' + j.location : ''}</p>
+                <p class="text-xs mt-0.5"><span class="${rec}">${j.recommendation || ''}</span><span class="text-gray-600 ml-2">${score}/5</span></p>
+              </div>
+              <div class="flex flex-col items-end gap-1 shrink-0">
+                ${link}
+                <span class="text-xs text-gray-600">${relTime(j.created_at)}</span>
+              </div>
+            </div>`;
+          }).join('');
+        }).catch(() => {});
+    }
+
+    refreshFoundJobs();
+    setInterval(refreshFoundJobs, 10000);
   </script>
 
   <!-- Activity Log -->
