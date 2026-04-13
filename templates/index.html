@@ -228,6 +228,73 @@
     updateAgentUI();
   </script>
 
+  <!-- Activity Log -->
+  <div class="bg-gray-800 border border-gray-700 rounded-xl p-5">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h3 class="text-lg font-semibold">📋 Activity Log</h3>
+        <p class="text-gray-400 text-xs mt-0.5">Live feed of evaluations, applications, and system events</p>
+      </div>
+      <span id="activity-refresh-dot" class="w-2 h-2 rounded-full bg-gray-600"></span>
+    </div>
+    <div id="activity-feed" class="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+      <p class="text-gray-500 text-sm">Loading activity…</p>
+    </div>
+  </div>
+
+  <script>
+    const colorMap = {
+      green:  { bg: 'bg-green-900/40',  text: 'text-green-300' },
+      red:    { bg: 'bg-red-900/40',    text: 'text-red-300' },
+      indigo: { bg: 'bg-indigo-900/40', text: 'text-indigo-300' },
+      blue:   { bg: 'bg-blue-900/40',   text: 'text-blue-300' },
+      yellow: { bg: 'bg-yellow-900/40', text: 'text-yellow-300' },
+      gray:   { bg: 'bg-gray-700/40',   text: 'text-gray-300' },
+    };
+
+    function relativeTime(tsStr) {
+      if (!tsStr) return '';
+      const d = new Date(tsStr);
+      if (isNaN(d)) return '';
+      const diff = Math.round((Date.now() - d) / 1000);
+      if (diff < 60)   return diff + 's ago';
+      if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+      if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+      return Math.floor(diff / 86400) + 'd ago';
+    }
+
+    function refreshActivity() {
+      const dot = document.getElementById('activity-refresh-dot');
+      dot.className = 'w-2 h-2 rounded-full bg-green-400 animate-pulse';
+      fetch('/api/activity')
+        .then(r => r.json())
+        .then(data => {
+          const feed = document.getElementById('activity-feed');
+          const events = data.events || [];
+          if (events.length === 0) {
+            feed.innerHTML = '<p class="text-gray-500 text-sm">No activity yet. Paste a job URL or description above to get started.</p>';
+          } else {
+            feed.innerHTML = events.map(e => {
+              const c = colorMap[e.color] || colorMap.gray;
+              const when = relativeTime(e.ts);
+              return `<div class="flex items-start gap-3 ${c.bg} rounded-lg px-3 py-2">
+                <span class="text-base shrink-0 mt-0.5">${e.icon}</span>
+                <span class="text-xs ${c.text} flex-1 leading-relaxed">${e.text}</span>
+                <span class="text-xs text-gray-600 shrink-0 mt-0.5 whitespace-nowrap">${when}</span>
+              </div>`;
+            }).join('');
+          }
+          dot.className = 'w-2 h-2 rounded-full bg-gray-600';
+        })
+        .catch(() => {
+          dot.className = 'w-2 h-2 rounded-full bg-red-500';
+        });
+    }
+
+    refreshActivity();
+    setInterval(refreshActivity, 15000);
+  </script>
+
   <!-- Job Evaluation Input -->
   <div class="bg-gray-800 border border-gray-700 rounded-xl p-6">
     <h2 class="text-lg font-semibold mb-1">Evaluate a Job</h2>

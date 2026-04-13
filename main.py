@@ -1026,6 +1026,109 @@ def create_app():
             headers={"Content-Disposition": "attachment; filename=career_ops_applications.csv"},
         )
 
+    @app.route("/api/activity")
+    @login_required
+    def activity_log():
+        """Return a combined recent-activity feed from the audit log and database."""
+        import glob as _glob
+        events = []
+
+        # ── Pull from audit JSONL files (last 2 days) ─────────────────────────
+        log_dir = os.path.join(os.path.dirname(__file__), "logs")
+        log_files = sorted(_glob.glob(os.path.join(log_dir, "audit_*.jsonl")))[-2:]
+        for lf in log_files:
+            try:
+                with open(lf) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except Exception:
+                            continue
+                        action = entry.get("action", "")
+                        details = entry.get("details", {})
+                        ts = entry.get("timestamp", "")
+
+                        if action == "login_attempt":
+                            ok = details.get("success", False)
+                            events.append({
+                                "ts": ts,
+                                "icon": "🔐",
+                                "color": "green" if ok else "red",
+                                "text": "Login successful" if ok else "Failed login attempt",
+                            })
+                        elif action == "job_evaluation":
+                            grade = details.get("grade", "?")
+                            company = details.get("company", "Unknown")
+                            events.append({
+                                "ts": ts,
+                                "icon": "🔍",
+                                "color": "indigo",
+                                "text": f"Evaluated {company} — Grade {grade}",
+                            })
+                        elif action == "application_sent":
+                            company = details.get("company", "Unknown")
+                            method = details.get("method", "")
+                            ok = details.get("success", False)
+                            events.append({
+                                "ts": ts,
+                                "icon": "📨",
+                                "color": "green" if ok else "red",
+                                "text": f"{'Sent' if ok else 'Failed'} application to {company} via {method}",
+                            })
+                        elif action == "scam_detected":
+                            url = details.get("url", "")[:50]
+                            tier = details.get("tier", "")
+                            events.append({
+                                "ts": ts,
+                                "icon": "🚩",
+                                "color": "red",
+                                "text": f"Scam/spam blocked ({tier}): {url}",
+                            })
+                        elif action == "agent_action":
+                            events.append({
+                                "ts": ts,
+                                "icon": "🤖",
+                                "color": "blue",
+                                "text": f"Agent: {details.get('action','')} — {details.get('target','')}",
+                            })
+            except Exception:
+                continue
+
+        # ── Pull recent scans from DB ──────────────────────────────────────────
+        try:
+            scans = ScanHistory.query.order_by(ScanHistory.scanned_at.desc()).limit(15).all()
+            for s in scans:
+                events.append({
+                    "ts": s.scanned_at.isoformat() if s.scanned_at else "",
+                    "icon": "🌐",
+                    "color": "gray",
+                    "text": f"URL scanned ({s.result or 'new'}): {(s.url or '')[:60]}",
+                })
+        except Exception:
+            pass
+
+        # ── Pull recent email inbox scans ──────────────────────────────────────
+        try:
+            from services.email_tracker import email_tracker
+            replies = email_tracker.check_replies(days=7)
+            if isinstance(replies, list):
+                for r in replies[:5]:
+                    events.append({
+                        "ts": r.get("date", ""),
+                        "icon": "📧",
+                        "color": "yellow" if r.get("type") == "interview" else "gray",
+                        "text": f"Email reply ({r.get('type','reply')}): {r.get('subject','')[:50]}",
+                    })
+        except Exception:
+            pass
+
+        # ── Sort newest-first, cap at 30 ──────────────────────────────────────
+        events.sort(key=lambda e: e.get("ts", ""), reverse=True)
+        return jsonify({"events": events[:30]})
+
     @app.route("/api/health")
     def health():
         try:
