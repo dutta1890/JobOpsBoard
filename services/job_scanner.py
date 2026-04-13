@@ -37,8 +37,12 @@ logger = logging.getLogger(__name__)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 BASE          = os.path.dirname(__file__)
-SOURCES_PATH  = os.path.join(BASE, "..", "data", "job_sources.json")
-SETTINGS_PATH = os.path.join(BASE, "..", "data", "scanner_settings.json")
+SOURCES_PATH      = os.path.join(BASE, "..", "data", "job_sources.json")
+SETTINGS_PATH     = os.path.join(BASE, "..", "data", "scanner_settings.json")
+SCAN_MEMORY_PATH  = os.path.join(BASE, "..", "data", "scan_memory.json")
+
+# Hours before re-scanning a source that previously yielded 0 new jobs
+SOURCE_COOLDOWN_HOURS = 12
 
 # ── HTTP ───────────────────────────────────────────────────────────────────────
 HEADERS = {
@@ -622,9 +626,79 @@ class JobScanner:
             f"ai-sent:{s.jobs_sent_to_ai} saved:{s.jobs_saved} queued:{s.jobs_queued}"
         )
 
+    # ── Scan memory ────────────────────────────────────────────────────────────
+
+    def _load_scan_memory(self) -> dict:
+        """Load per-source scan history from disk."""
+        try:
+            with open(SCAN_MEMORY_PATH) as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _save_scan_memory(self, memory: dict) -> None:
+        try:
+            with open(SCAN_MEMORY_PATH, "w") as f:
+                json.dump(memory, f, indent=2)
+        except Exception as e:
+            logger.warning(f"[Scanner] Could not save scan memory: {e}")
+
+    def _source_sort_key(self, url: str, memory: dict) -> tuple:
+        """Return a sort tuple so sources are scanned in the right order.
+
+        Priority within each tier (lower = sooner):
+          0 — never seen              (always scan first)
+          1 — found jobs last time    (high-value, always rescan early)
+          2 — no jobs, cooldown done  (scan in normal order)
+          3 — no jobs, still cooling  (scan last; don't skip entirely)
+        """
+        rec = memory.get(url)
+        if rec is None:
+            return (0,)
+        jobs = rec.get("jobs_found_last", 0)
+        if jobs > 0:
+            return (1,)
+        last = rec.get("last_scanned", "")
+        if last:
+            try:
+                dt = datetime.fromisoformat(last)
+                hours_ago = (datetime.now() - dt).total_seconds() / 3600
+                if hours_ago < SOURCE_COOLDOWN_HOURS:
+                    return (3,)
+            except Exception:
+                pass
+        return (2,)
+
+    def _update_source_memory(self, url: str, jobs_found: int) -> None:
+        """Record that a source was just scanned and note how many jobs it yielded."""
+        mem = self._load_scan_memory()
+        prev = mem.get(url, {})
+        mem[url] = {
+            "last_scanned":    datetime.now().isoformat(),
+            "jobs_found_last": jobs_found,
+            "scan_count":      prev.get("scan_count", 0) + 1,
+        }
+        self._save_scan_memory(mem)
+
     # ── Static source list ─────────────────────────────────────────────────────
 
     def _build_static_sources(self, city: str, keywords: list) -> list:
+        """Build source list ordered by thinking priority + scan memory.
+
+        Scan order (thinking capability):
+          Tier 0 — user-provided companies (highest priority)
+          Tier 1 — marketing / digital agencies (most likely to hire PMs)
+          Tier 2 — D2C brands, e-commerce, quick-commerce
+          Tier 3 — tech platforms, FMCG, B2B SaaS, fintech, edtech
+          Tier 4 — consulting, travel, UAE conglomerates
+          Tier 5 — VC portfolios, job portals, extra search URLs
+
+        Within each tier:
+          Rank 0 — never scanned (always first)
+          Rank 1 — found jobs last time (high-value, rescan early)
+          Rank 2 — no jobs but cooldown expired
+          Rank 3 — no jobs, still in {SOURCE_COOLDOWN_HOURS}h cooldown (scan last)
+        """
         try:
             with open(SOURCES_PATH) as f:
                 data = json.load(f)
@@ -632,67 +706,113 @@ class JobScanner:
             logger.error(f"[Scanner] Cannot load sources: {e}")
             return []
 
+        memory  = self._load_scan_memory()
         query   = keywords[0] if keywords else "Performance Marketing"
-        sources = []
+        tiered: list[tuple] = []   # (tier, rank_tuple, url, source_dict)
         seen:   set[str] = set()
 
-        def _add(name, url, stype):
+        def _norm(url: str) -> str:
+            if not url:
+                return ""
+            if not url.startswith("http"):
+                url = "https://" + url
+            return url
+
+        def _add(name: str, url: str, stype: str, tier: int = 5) -> None:
+            url = _norm(url)
             if not url:
                 return
             if any(d in url for d in SKIP_SOURCE_DOMAINS):
                 return
-            if not url.startswith("http"):
-                url = "https://" + url
             if url in seen:
                 return
             seen.add(url)
-            sources.append({"name": name, "url": url, "type": stype})
+            rank = self._source_sort_key(url, memory)
+            tiered.append((tier, rank, url, {"name": name, "url": url, "type": stype}))
 
-        # Flat sector lists
-        for key in [
-            "tech_platforms", "d2c_brands", "ecommerce", "quick_commerce",
-            "fmcg_cpg", "consulting", "b2b_saas", "fintech",
-            "uae_conglomerates", "edtech", "travel_hospitality",
-        ]:
-            for item in data.get(key, []):
+        def _flat(raw) -> list:
+            """Flatten list-or-region-dict to a flat item list."""
+            if isinstance(raw, list):
+                return raw
+            if isinstance(raw, dict):
+                return [item for vlist in raw.values()
+                        for item in (vlist if isinstance(vlist, list) else [])]
+            return []
+
+        # ── Tier 0: user-provided company list ───────────────────────────────
+        for item in data.get("user_companies", []):
+            if isinstance(item, dict):
+                c = item.get("careers") or item.get("url", "")
+                _add(item.get("name", c), c, "career_page", tier=0)
+
+        # ── Tier 1: marketing / digital agencies ─────────────────────────────
+        for top_key in ("agency_networks", "boutique_agencies"):
+            for item in _flat(data.get(top_key, {})):
                 if isinstance(item, dict):
-                    careers = item.get("careers") or item.get("url", "")
-                    _add(item.get("name", careers), careers, "career_page")
+                    c = item.get("careers") or item.get("url", "")
+                    _add(item.get("name", c), c, "career_page", tier=1)
 
-        # Nested regional (agency_networks, boutique_agencies)
-        for top_key in ["agency_networks", "boutique_agencies"]:
-            region_map = data.get(top_key, {})
-            if isinstance(region_map, dict):
-                for region_list in region_map.values():
-                    for item in (region_list if isinstance(region_list, list) else []):
-                        if isinstance(item, dict):
-                            careers = item.get("careers") or item.get("url", "")
-                            _add(item.get("name", careers), careers, "career_page")
+        # ── Tier 2: D2C brands, e-commerce, quick-commerce ───────────────────
+        for key in ("d2c_brands", "ecommerce", "quick_commerce"):
+            for item in _flat(data.get(key, [])):
+                if isinstance(item, dict):
+                    c = item.get("careers") or item.get("url", "")
+                    _add(item.get("name", c), c, "career_page", tier=2)
 
+        # ── Tier 3: tech platforms, FMCG, SaaS, fintech, edtech ─────────────
+        for key in ("tech_platforms", "fmcg_cpg", "b2b_saas", "edtech"):
+            for item in _flat(data.get(key, [])):
+                if isinstance(item, dict):
+                    c = item.get("careers") or item.get("url", "")
+                    _add(item.get("name", c), c, "career_page", tier=3)
+        for item in _flat(data.get("fintech", [])):
+            if isinstance(item, dict):
+                c = item.get("careers") or item.get("url", "")
+                _add(item.get("name", c), c, "career_page", tier=3)
+
+        # ── Tier 4: consulting, travel, UAE conglomerates ────────────────────
+        for key in ("consulting", "travel_hospitality", "uae_conglomerates"):
+            for item in _flat(data.get(key, [])):
+                if isinstance(item, dict):
+                    c = item.get("careers") or item.get("url", "")
+                    _add(item.get("name", c), c, "career_page", tier=4)
+
+        # ── Tier 5: VC portfolio, job portals, extra search URLs ─────────────
         for item in data.get("vc_portfolio_jobs", []):
             if isinstance(item, dict):
-                url = item.get("url", "")
-                _add(item.get("name", url), url, "career_page")
+                u = item.get("url", "")
+                _add(item.get("name", u), u, "career_page", tier=5)
 
-        # Portal search URLs (skip blocked domains)
         loc_q = quote(city or "India")
         q_enc = quote(query)
         for region, portal_list in data.get("job_portals", {}).items():
             for portal in (portal_list if isinstance(portal_list, list) else []):
                 if not isinstance(portal, dict):
                     continue
-                tpl = portal.get("search_url", "")
+                tpl  = portal.get("search_url", "")
                 base = portal.get("url", "")
                 if not tpl or any(d in base for d in SKIP_SOURCE_DOMAINS):
                     continue
                 url = tpl.replace("{query}", q_enc).replace("{location}", loc_q)
-                _add(portal.get("name", base), url, "search_results")
+                _add(portal.get("name", base), url, "search_results", tier=5)
 
-        # Extra high-signal sources
         for name, url in self._extra_pm_sources(city, query):
-            _add(name, url, "search_results")
+            _add(name, url, "search_results", tier=5)
 
-        return sources
+        # Sort: tier ASC, then rank tuple (never-seen → found-jobs → expired → cooldown)
+        tiered.sort(key=lambda x: (x[0], x[1]))
+
+        counts = {}
+        for t, _, _, _ in tiered:
+            counts[t] = counts.get(t, 0) + 1
+        logger.info(
+            f"[Scanner] Source plan: "
+            + " | ".join(
+                f"T{t}={n}" for t, n in sorted(counts.items())
+            )
+        )
+
+        return [x[3] for x in tiered]
 
     def _extra_pm_sources(self, city: str, keyword: str) -> list[tuple[str, str]]:
         c  = quote(city or "Mumbai")
@@ -710,8 +830,9 @@ class JobScanner:
     # ── Career page crawl ──────────────────────────────────────────────────────
 
     def _crawl_source(self, source: dict, settings: dict):
-        name = source["name"]
-        url  = source["url"]
+        name       = source["name"]
+        url        = source["url"]
+        jobs_before = self.stats.jobs_saved   # track new jobs found from this source
         self.stats.current_source = name
         self.stats.sources_checked += 1
 
@@ -768,6 +889,11 @@ class JobScanner:
                 break
             self._run_pipeline(job_url, settings)
             time.sleep(DELAY_BETWEEN_PAGES)
+
+        # Record how many new jobs this source yielded so we can prioritise
+        # it correctly on the next pass.
+        jobs_delta = self.stats.jobs_saved - jobs_before
+        self._update_source_memory(url, jobs_delta)
 
     # ── Full evaluation pipeline ──────────────────────────────────────────────
 

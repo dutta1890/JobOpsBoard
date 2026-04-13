@@ -322,7 +322,26 @@
       ></textarea>
     </div>
 
-    <div class="mt-3 flex items-center gap-3">
+    <!-- Auto-start toggles -->
+    <div class="mt-4 flex flex-wrap gap-5">
+      <label class="flex items-center gap-2 cursor-pointer select-none">
+        <input type="checkbox" id="setting-auto-scanner"
+          class="w-4 h-4 accent-indigo-500 rounded">
+        <span class="text-sm text-gray-300">
+          Auto-start scanner on boot
+          <span class="text-gray-600 text-xs">(continuous scan starts automatically when app restarts)</span>
+        </span>
+      </label>
+      <label class="flex items-center gap-2 cursor-pointer select-none">
+        <input type="checkbox" id="setting-auto-agent"
+          class="w-4 h-4 accent-indigo-500 rounded">
+        <span class="text-sm text-gray-300">
+          Auto-start agent when new jobs found
+        </span>
+      </label>
+    </div>
+
+    <div class="mt-4 flex items-center gap-3">
       <button onclick="saveSettings()"
         class="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors">
         Save Settings
@@ -330,6 +349,78 @@
       <span id="settings-saved-msg" class="text-xs text-green-400 hidden">✓ Saved</span>
     </div>
   </div>
+
+  <!-- ══ COMPANY WATCHLIST ═════════════════════════════════════════════════ -->
+  <div class="bg-gray-800 border border-gray-700 rounded-xl p-5">
+    <div class="flex items-center justify-between mb-3">
+      <div>
+        <h3 class="text-lg font-semibold">🏢 Company Watchlist
+          <span id="company-count-badge" class="ml-2 px-2 py-0.5 text-xs rounded bg-gray-700 text-gray-400">0 companies</span>
+        </h3>
+        <p class="text-gray-500 text-xs mt-0.5">
+          Tier-0 priority — scanner hits these FIRST before any other source.
+          Paste one URL per line, or <code class="text-indigo-400">Name | https://company.com/careers</code>
+        </p>
+      </div>
+      <button onclick="saveCompanies()"
+        class="shrink-0 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors">
+        Save List
+      </button>
+    </div>
+    <textarea id="company-list" rows="6"
+      placeholder="https://agency.com/careers&#10;Great Agency | https://greatagency.in/careers&#10;https://d2cbrand.com/jobs"
+      class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200
+             placeholder-gray-600 font-mono focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 resize-y"
+    ></textarea>
+    <p class="text-xs text-gray-600 mt-1.5">
+      <span id="companies-saved-msg" class="text-green-400 hidden">✓ Saved — scanner will prioritise these on the next pass</span>
+    </p>
+  </div>
+
+  <script>
+    function loadCompanies() {
+      fetch('/scanner/companies')
+        .then(r => r.json())
+        .then(data => {
+          const list = data.companies || [];
+          document.getElementById('company-list').value = list.map(c => {
+            const url = c.careers || c.url || '';
+            const name = c.name || '';
+            return (name && name !== urlHost(url)) ? name + ' | ' + url : url;
+          }).join('\n');
+          document.getElementById('company-count-badge').textContent =
+            list.length + ' compan' + (list.length === 1 ? 'y' : 'ies');
+        }).catch(() => {});
+    }
+    function urlHost(u) {
+      try { return new URL(u.startsWith('http') ? u : 'https://' + u).hostname; } catch { return u; }
+    }
+    function saveCompanies() {
+      const raw = document.getElementById('company-list').value.trim();
+      const companies = raw ? raw.split('\n').map(line => {
+        line = line.trim();
+        if (!line) return null;
+        if (line.includes('|')) {
+          const [n, u] = line.split('|').map(s => s.trim());
+          return { name: n, careers: u.startsWith('http') ? u : 'https://' + u };
+        }
+        return line.startsWith('http') ? line : 'https://' + line;
+      }).filter(Boolean) : [];
+
+      fetch('/scanner/companies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ companies }),
+      }).then(r => r.json()).then(d => {
+        const msg = document.getElementById('companies-saved-msg');
+        msg.classList.remove('hidden');
+        document.getElementById('company-count-badge').textContent =
+          (d.count || 0) + ' compan' + ((d.count || 0) === 1 ? 'y' : 'ies');
+        setTimeout(() => msg.classList.add('hidden'), 4000);
+      });
+    }
+    loadCompanies();
+  </script>
 
   <!-- ══ JOB SCANNER CONTROL ════════════════════════════════════════════════ -->
   <div class="bg-gray-800 rounded-xl p-5 border border-gray-700">
@@ -441,15 +532,19 @@
           document.getElementById('setting-cv').value        = s.cv_text  || '';
           const kw = Array.isArray(s.search_keywords) ? s.search_keywords.join(', ') : (s.search_keywords || '');
           document.getElementById('setting-keywords').value  = kw;
+          document.getElementById('setting-auto-scanner').checked = !!s.auto_start_scanner;
+          document.getElementById('setting-auto-agent').checked   = !!s.auto_start_agent;
         }).catch(() => {});
     }
     function saveSettings() {
       const kwRaw = document.getElementById('setting-keywords').value;
       const kws   = kwRaw.split(',').map(k => k.trim()).filter(Boolean);
       const body  = {
-        location:        document.getElementById('setting-location').value.trim(),
-        cv_text:         document.getElementById('setting-cv').value.trim(),
-        search_keywords: kws.length ? kws : ['Performance Marketing'],
+        location:           document.getElementById('setting-location').value.trim(),
+        cv_text:            document.getElementById('setting-cv').value.trim(),
+        search_keywords:    kws.length ? kws : ['Performance Marketing'],
+        auto_start_scanner: document.getElementById('setting-auto-scanner').checked,
+        auto_start_agent:   document.getElementById('setting-auto-agent').checked,
       };
       fetch('/scanner/settings', {
         method: 'POST',

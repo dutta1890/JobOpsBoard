@@ -1,4 +1,7 @@
 {
+  "user_companies": [
+  ],
+
   "job_portals": {
     "india": [
       {"name": "LinkedIn", "url": "linkedin.com/jobs", "type": "primary", "search_url": "https://www.linkedin.com/jobs/search/?keywords={query}&location={location}"},

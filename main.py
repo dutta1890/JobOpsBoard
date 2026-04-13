@@ -176,6 +176,24 @@ def create_app():
         _migrate_columns(db)
         logger.info("Database tables created/verified.")
 
+    # ── Auto-start scanner on boot if setting is enabled ───────────────────────
+    def _auto_start_scanner():
+        """Start the job scanner in the background if auto_start_scanner=true."""
+        import time as _time
+        _time.sleep(3)   # give Flask a moment to finish binding
+        try:
+            from services.job_scanner import job_scanner, JobScanner
+            settings = JobScanner.load_settings()
+            if settings.get("auto_start_scanner", False):
+                if not job_scanner.is_running:
+                    job_scanner.start(app)
+                    logger.info("[Boot] Auto-started job scanner (auto_start_scanner=true).")
+        except Exception as e:
+            logger.warning(f"[Boot] Scanner auto-start failed: {e}")
+
+    import threading as _threading_boot
+    _threading_boot.Thread(target=_auto_start_scanner, daemon=True, name="boot_scanner").start()
+
     @app.after_request
     def after_request(response):
         return add_security_headers(response)
@@ -1056,10 +1074,45 @@ def create_app():
         if request.method == "GET":
             return jsonify(JobScanner.load_settings())
         body = request.get_json(silent=True) or {}
-        allowed = {"location", "cv_text", "search_keywords", "auto_start_agent"}
+        allowed = {"location", "cv_text", "search_keywords", "auto_start_agent", "auto_start_scanner"}
         update  = {k: v for k, v in body.items() if k in allowed}
         JobScanner.save_settings(update)
         return jsonify({"success": True})
+
+    @app.route("/scanner/companies", methods=["GET", "POST"])
+    @login_required
+    def scanner_companies():
+        """GET returns current user_companies list; POST replaces it."""
+        try:
+            with open(os.path.join(os.path.dirname(__file__), "data", "job_sources.json")) as f:
+                sources = json.load(f)
+        except Exception:
+            sources = {}
+
+        if request.method == "GET":
+            return jsonify({"companies": sources.get("user_companies", [])})
+
+        body = request.get_json(silent=True) or {}
+        companies = body.get("companies", [])
+        if not isinstance(companies, list):
+            return jsonify({"error": "companies must be a list"}), 400
+
+        # Normalise each entry: accept {name, careers/url} dicts or plain URL strings
+        from urllib.parse import urlparse as _urlparse
+        normalised = []
+        for c in companies:
+            if isinstance(c, str) and c.strip():
+                url = c.strip()
+                name = _urlparse(url).netloc or url
+                normalised.append({"name": name, "careers": url})
+            elif isinstance(c, dict) and (c.get("careers") or c.get("url")):
+                normalised.append(c)
+
+        sources["user_companies"] = normalised
+        with open(os.path.join(os.path.dirname(__file__), "data", "job_sources.json"), "w") as f:
+            json.dump(sources, f, indent=2)
+
+        return jsonify({"success": True, "count": len(normalised)})
 
     @app.route("/scanner/upload-cv", methods=["POST"])
     @login_required
