@@ -156,7 +156,7 @@ document.addEventListener("DOMContentLoaded", () => {
           </div>
           <div class="flex flex-col items-end gap-2 shrink-0">
             <div class="flex items-baseline gap-1">
-              <span class="text-5xl font-bold ${gradeColor(d.grade)}">${d.grade || "—"}</span>
+              <span class="text-5xl font-bold ${gradeColor(d.grade)}">${esc(d.grade) || "—"}</span>
               <span class="text-gray-500 text-sm">&nbsp;${d.score != null ? d.score.toFixed(2) : "—"}/5</span>
             </div>
             ${recBadge(d.recommendation || "")}
