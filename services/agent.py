@@ -230,6 +230,17 @@ class CareerOpsAgent:
             except Exception:
                 pass
 
+        # ── Relevance re-verification gate ────────────────────────────────────
+        # For all tasks (especially scanner-sourced ones) we re-check that the
+        # job still passes our hard filters before spending time applying.
+        if app_record and app_record.platform == "auto_scan":
+            reject_reason = self._relevance_check(app_record, evaluation)
+            if reject_reason:
+                logger.warning(
+                    f"[Agent] Relevance check failed for {task.company} — {task.role}: {reject_reason}"
+                )
+                return {"success": False, "error": f"Relevance check failed: {reject_reason}"}
+
         if task.method == ApplicationMethod.EMAIL:
             cover = generate_cover_letter(task.jd_text, evaluation)
             if "error" in cover:
@@ -305,6 +316,68 @@ class CareerOpsAgent:
         except Exception as e:
             logger.warning(f"Could not update DB for task {task.id}: {e}")
 
+    @staticmethod
+    def _relevance_check(app_record, evaluation: dict) -> str | None:
+        """
+        Re-verify that a scanner-sourced job is still relevant before applying.
+        Returns None if the job passes, or a short reason string if it should be skipped.
+
+        Checks (in order):
+          1. Grade must be A or B from the stored AI evaluation
+          2. Recommendation must not be "Skip"
+          3. JD text must still pass PM keyword density check
+          4. Location from stored evaluation must match scanner settings
+        """
+        import re as _re
+
+        # ── Check 1: Grade ─────────────────────────────────────────────────────
+        grade = (app_record.grade or "").strip().upper()
+        if grade not in ("A", "B"):
+            return f"grade {grade} not eligible"
+
+        # ── Check 2: Recommendation ────────────────────────────────────────────
+        rec = (app_record.recommendation or "").lower()
+        if "skip" in rec:
+            return f"recommendation is Skip ({app_record.recommendation})"
+
+        # ── Check 3: PM keyword density ────────────────────────────────────────
+        jd = app_record.jd_text or ""
+        if jd:
+            _PM_GROUPS = [
+                _re.compile(
+                    r"(performance\s+marketing|paid\s+media|media\s+manager|biddable|programmatic|growth\s+marketing)",
+                    _re.IGNORECASE,
+                ),
+                _re.compile(r"(ppc|sem|google\s+ads|meta\s+ads|paid\s+social|paid\s+search)", _re.IGNORECASE),
+                _re.compile(r"(roas|cpa|cpl|cpc|return\s+on\s+ad|conversion\s+rate)", _re.IGNORECASE),
+            ]
+            groups_hit = sum(1 for pat in _PM_GROUPS if pat.search(jd))
+            if groups_hit < 1:
+                return "JD no longer contains PM keywords"
+
+        # ── Check 4: Location from scanner settings ────────────────────────────
+        try:
+            from services.job_scanner import JobScanner
+            settings = JobScanner.load_settings()
+            city = settings.get("location", "").strip()
+            if city:
+                stored_loc = (app_record.location or "").lower()
+                jd_lower   = jd.lower()
+                city_lower = city.lower()
+                remote_re  = _re.compile(r"\b(remote|hybrid|work\s+from\s+home|wfh)\b", _re.IGNORECASE)
+                if (
+                    city_lower not in stored_loc
+                    and city_lower not in jd_lower
+                    and not remote_re.search(stored_loc)
+                    and not remote_re.search(jd_lower)
+                ):
+                    return f"location '{stored_loc}' doesn't match target city '{city}'"
+        except Exception:
+            pass
+
+        return None  # all checks passed
+
 
 # ── Singleton ──────────────────────────────────────────────────────────────────
 agent = CareerOpsAgent()
+career_agent = agent  # alias used by job_scanner and other modules
