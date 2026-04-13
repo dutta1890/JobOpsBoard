@@ -990,6 +990,8 @@ def create_app():
         story = interview_prep.generate_star_story(achievement, question_type)
         if "error" in story:
             return jsonify({"success": False, "error": story["error"]}), 500
+        if story.get("duplicate"):
+            return jsonify({"success": True, "duplicate": True, "message": story["message"], "story": story.get("story", story)})
         audit_logger.log_agent_action("star_story_generated", achievement[:80])
         return jsonify({"success": True, "story": story})
 
@@ -1133,20 +1135,32 @@ _inbox_thread.start()
 
 
 # ── Playwright install check ────────────────────────────────────────────────────
+_CHROMIUM_EXECUTABLE = (
+    "/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium"
+)
+
+
 def _check_playwright() -> None:
-    """Warn at startup if Chromium is not installed (needed for PDF gen + form fill)."""
+    """Warn at startup if Playwright Chromium is not launchable."""
     import shutil
-    if not shutil.which("chromium") and not shutil.which("chromium-browser"):
-        try:
-            from playwright.sync_api import sync_playwright
-            with sync_playwright() as p:
-                p.chromium.launch(headless=True).close()
-        except Exception:
-            app.logger.warning(
-                "Playwright Chromium is NOT installed. "
-                "PDF generation and form-filling will fail. "
-                "Fix: run `python -m playwright install chromium` in the shell."
-            )
+    executable = _CHROMIUM_EXECUTABLE if os.path.exists(_CHROMIUM_EXECUTABLE) else None
+    if not executable:
+        # fallback: try system PATH
+        executable = shutil.which("chromium") or shutil.which("chromium-browser")
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            kwargs = {"headless": True}
+            if executable:
+                kwargs["executable_path"] = executable
+            browser = p.chromium.launch(**kwargs)
+            browser.close()
+        app.logger.info("Playwright Chromium: ready.")
+    except Exception as exc:
+        app.logger.warning(
+            f"Playwright Chromium check failed: {exc}. "
+            "PDF generation and form-filling may not work."
+        )
 
 
 _threading.Thread(target=_check_playwright, daemon=True, name="playwright_check").start()

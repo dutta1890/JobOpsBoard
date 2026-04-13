@@ -108,10 +108,18 @@ class PDFGenerator:
         output_path = OUTPUT_DIR / filename
 
         try:
+            import shutil
             from playwright.sync_api import sync_playwright
 
+            _chromium = "/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium"
+            _launch_kwargs: dict = {"headless": True}
+            if os.path.exists(_chromium):
+                _launch_kwargs["executable_path"] = _chromium
+            elif shutil.which("chromium"):
+                _launch_kwargs["executable_path"] = shutil.which("chromium")
+
             with sync_playwright() as p:
-                browser = p.chromium.launch()
+                browser = p.chromium.launch(**_launch_kwargs)
                 page = browser.new_page()
                 page.set_content(html, wait_until="networkidle")
                 page.pdf(

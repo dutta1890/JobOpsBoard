@@ -36,6 +36,27 @@
     </div>
   </div>
 
+  <!-- Grade Distribution Chart -->
+  {% if stats.total > 0 %}
+  <div class="bg-gray-800 border border-gray-700 rounded-xl p-5">
+    <p class="text-xs text-gray-400 uppercase tracking-wider mb-4">Grade Distribution</p>
+    {% set grade_colors = {'A': 'bg-green-500', 'B': 'bg-blue-500', 'C': 'bg-yellow-500', 'D': 'bg-orange-500', 'F': 'bg-red-500'} %}
+    {% set grade_text   = {'A': 'text-green-400', 'B': 'text-blue-400', 'C': 'text-yellow-400', 'D': 'text-orange-400', 'F': 'text-red-400'} %}
+    <div class="flex items-end gap-3 h-20">
+      {% for grade in ['A', 'B', 'C', 'D', 'F'] %}
+        {% set count = stats.grade_counts[grade] %}
+        {% set pct   = ((count / stats.total) * 100) | round | int %}
+        <div class="flex flex-col items-center gap-1 flex-1">
+          <span class="{{ grade_text[grade] }} text-xs font-bold">{{ count }}</span>
+          <div class="w-full {{ grade_colors[grade] }} rounded-t-sm transition-all"
+               style="height: {{ [pct, 4] | max }}%"></div>
+          <span class="text-gray-500 text-xs font-medium">{{ grade }}</span>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
   <!-- ── Agent Control Panel ─────────────────────────────────────────── -->
   <div class="bg-gray-800 rounded-xl p-5 border border-gray-700">
     <div class="flex justify-between items-start mb-4">
@@ -328,7 +349,36 @@
     {% endif %}
 
     {% if applications %}
-    <div class="px-6 py-3 border-t border-gray-700 flex justify-end">
+    <div class="px-6 py-3 border-t border-gray-700 flex items-center justify-between">
+      <!-- Pagination controls -->
+      <div class="flex items-center gap-1">
+        {% if pagination.has_prev %}
+          <a href="?page={{ pagination.prev_num }}"
+             class="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs transition-colors">
+            ← Prev
+          </a>
+        {% endif %}
+        {% for p in pagination.iter_pages(left_edge=1, right_edge=1, left_current=2, right_current=2) %}
+          {% if p %}
+            <a href="?page={{ p }}"
+               class="px-3 py-1 rounded text-xs transition-colors
+                      {{ 'bg-indigo-600 text-white' if p == pagination.page else 'bg-gray-700 hover:bg-gray-600 text-gray-300' }}">
+              {{ p }}
+            </a>
+          {% else %}
+            <span class="text-gray-600 text-xs px-1">…</span>
+          {% endif %}
+        {% endfor %}
+        {% if pagination.has_next %}
+          <a href="?page={{ pagination.next_num }}"
+             class="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs transition-colors">
+            Next →
+          </a>
+        {% endif %}
+        <span class="text-gray-600 text-xs ml-2">
+          Page {{ pagination.page }} of {{ pagination.pages }} · {{ stats.total }} total
+        </span>
+      </div>
       <a href="/api/export/csv"
          class="text-xs text-gray-400 hover:text-white transition-colors flex items-center gap-1">
         ↓ Export CSV
@@ -460,6 +510,10 @@
       .then(d => {
         if (!d.success) {
           resultDiv.innerHTML = `<p class="text-red-400 text-xs">Error: ${d.error}</p>`;
+          return;
+        }
+        if (d.duplicate) {
+          resultDiv.innerHTML = `<p class="text-yellow-400 text-xs">⚠ ${d.message}</p>`;
           return;
         }
         resultDiv.innerHTML = '<p class="text-green-400 text-xs">✓ Story generated and saved!</p>';
