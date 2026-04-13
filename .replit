@@ -42,4 +42,5 @@ IMAP_SERVER = "imap.gmail.com"
 FLASK_SECRET_KEY = "fda28d205d8fdce273b8877db78919b7ea77d131f42599f0e4fc88225ff4190c"
 
 [deployment]
-deploymentTarget = "cloudrun"
+deploymentTarget = "autoscale"
+run = ["gunicorn", "--bind=0.0.0.0:5000", "--reuse-port", "main:app"]
