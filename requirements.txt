@@ -4,7 +4,7 @@ google-genai
 requests==2.31.0
 beautifulsoup4==4.12.2
 python-dotenv==1.0.0
-gunicorn==21.2.0
+gunicorn==22.0.0
 fuzzywuzzy==0.18.0
 python-Levenshtein==0.21.0
 playwright==1.40.0
