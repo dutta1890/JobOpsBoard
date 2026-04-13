@@ -67,7 +67,14 @@ document.addEventListener("DOMContentLoaded", () => {
       error: "bg-red-900/50 border-red-700 text-red-200",
       success: "bg-green-900/50 border-green-700 text-green-200",
     };
-    resultsDiv.innerHTML = `<div class="border rounded-lg p-4 ${colors[type] || colors.error}"><p class="text-sm">${message}</p></div>`;
+    const wrapper = document.createElement("div");
+    wrapper.className = `border rounded-lg p-4 ${colors[type] || colors.error}`;
+    const p = document.createElement("p");
+    p.className = "text-sm";
+    p.textContent = message;
+    wrapper.appendChild(p);
+    resultsDiv.innerHTML = "";
+    resultsDiv.appendChild(wrapper);
   }
 
   function gradeColor(grade) {
