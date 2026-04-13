@@ -300,9 +300,23 @@
 
     <!-- CV -->
     <div class="mt-4">
-      <label class="block text-xs text-gray-400 mb-1.5 font-medium">Your CV / Resume <span class="text-gray-600">(plain text — used for cover letters and form auto-fill)</span></label>
+      <div class="flex items-center justify-between mb-1.5">
+        <label class="text-xs text-gray-400 font-medium">
+          Your CV / Resume
+          <span class="text-gray-600">(plain text — used for cover letters and form auto-fill)</span>
+        </label>
+        <div class="flex items-center gap-2 shrink-0">
+          <span id="cv-upload-status" class="text-xs hidden"></span>
+          <label class="cursor-pointer px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs rounded-lg transition-colors border border-gray-600">
+            📎 Upload file
+            <input type="file" id="cv-file-input" accept=".pdf,.doc,.docx,.jpg,.jpeg"
+              class="hidden" onchange="uploadCvFile(this)">
+          </label>
+          <span class="text-xs text-gray-600">PDF · DOC · DOCX · JPG</span>
+        </div>
+      </div>
       <textarea id="setting-cv" rows="6"
-        placeholder="Paste your CV text here…"
+        placeholder="Paste your CV text here, or upload a file above…"
         class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200
                placeholder-gray-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 resize-y"
       ></textarea>
@@ -448,6 +462,38 @@
       });
     }
     loadSettings();
+
+    function uploadCvFile(input) {
+      const file = input.files[0];
+      if (!file) return;
+      const status = document.getElementById('cv-upload-status');
+      status.textContent = '⏳ Extracting text…';
+      status.className = 'text-xs text-yellow-400';
+      status.classList.remove('hidden');
+
+      const fd = new FormData();
+      fd.append('file', file);
+
+      fetch('/scanner/upload-cv', { method: 'POST', body: fd })
+        .then(r => r.json())
+        .then(data => {
+          if (data.error) {
+            status.textContent = '✗ ' + data.error;
+            status.className = 'text-xs text-red-400';
+          } else {
+            document.getElementById('setting-cv').value = data.cv_text;
+            status.textContent = '✓ Extracted ' + data.chars.toLocaleString() + ' chars';
+            status.className = 'text-xs text-green-400';
+          }
+          input.value = '';
+          setTimeout(() => status.classList.add('hidden'), 5000);
+        })
+        .catch(() => {
+          status.textContent = '✗ Upload failed';
+          status.className = 'text-xs text-red-400';
+          setTimeout(() => status.classList.add('hidden'), 4000);
+        });
+    }
 
     // ── Scanner control ───────────────────────────────────────────────────────
     function startScanner() {

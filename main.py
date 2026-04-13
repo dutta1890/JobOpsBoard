@@ -1061,6 +1061,74 @@ def create_app():
         JobScanner.save_settings(update)
         return jsonify({"success": True})
 
+    @app.route("/scanner/upload-cv", methods=["POST"])
+    @login_required
+    def upload_cv():
+        """Extract text from an uploaded CV file (PDF, DOCX, DOC, JPG/JPEG)."""
+        import subprocess, tempfile
+        from werkzeug.utils import secure_filename
+
+        file = request.files.get("file")
+        if not file or not file.filename:
+            return jsonify({"error": "No file provided"}), 400
+
+        filename  = secure_filename(file.filename)
+        ext       = os.path.splitext(filename)[1].lower()
+        allowed   = {".pdf", ".doc", ".docx", ".jpg", ".jpeg"}
+        if ext not in allowed:
+            return jsonify({"error": f"Unsupported file type: {ext}. Allowed: PDF, DOC, DOCX, JPG"}), 400
+
+        file_bytes = file.read()
+        text = ""
+
+        try:
+            if ext == ".pdf":
+                import io as _io
+                from pypdf import PdfReader
+                reader = PdfReader(_io.BytesIO(file_bytes))
+                pages  = [page.extract_text() or "" for page in reader.pages]
+                text   = "\n".join(pages).strip()
+
+            elif ext == ".docx":
+                import io as _io
+                from docx import Document
+                doc  = Document(_io.BytesIO(file_bytes))
+                text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+
+            elif ext == ".doc":
+                with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as tmp:
+                    tmp.write(file_bytes)
+                    tmp_path = tmp.name
+                result = subprocess.run(
+                    ["antiword", tmp_path],
+                    capture_output=True, text=True, timeout=15
+                )
+                os.unlink(tmp_path)
+                text = result.stdout.strip()
+                if not text:
+                    return jsonify({"error": "Could not extract text from DOC file — try saving as DOCX"}), 400
+
+            elif ext in {".jpg", ".jpeg"}:
+                from services.gemini_client import generate_with_image
+                prompt = (
+                    "This is a scanned CV / resume image. "
+                    "Extract ALL text exactly as it appears — name, contact, work experience, skills, education. "
+                    "Return plain text only, no markdown."
+                )
+                text = generate_with_image(prompt, file_bytes, mime_type="image/jpeg").strip()
+                if not text:
+                    return jsonify({"error": "Gemini could not extract text from the image"}), 400
+
+        except Exception as exc:
+            logger.error(f"CV upload extraction error: {exc}")
+            return jsonify({"error": f"Extraction failed: {exc}"}), 500
+
+        if not text:
+            return jsonify({"error": "No text could be extracted from the file"}), 400
+
+        JobScanner.save_settings({"cv_text": text})
+        return jsonify({"success": True, "cv_text": text, "chars": len(text)})
+
     @app.route("/api/scanner/recent")
     @login_required
     def scanner_recent_jobs():

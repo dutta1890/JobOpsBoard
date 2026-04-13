@@ -484,3 +484,26 @@ def _parse_json(text: str) -> dict:
         return json.loads(text[start:end])
     except json.JSONDecodeError as e:
         return {"error": f"JSON parse failed: {e}", "raw": text[:300]}
+
+
+@rate_limited
+def generate_with_image(prompt: str, image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
+    """Send an image + prompt to Gemini Vision and return the text response."""
+    client = _get_client()
+    try:
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=[
+                types.Content(parts=[
+                    types.Part(text=prompt),
+                    types.Part(
+                        inline_data=types.Blob(mime_type=mime_type, data=image_bytes)
+                    ),
+                ])
+            ],
+            config=types.GenerateContentConfig(max_output_tokens=MAX_TOKENS),
+        )
+        return response.text or ""
+    except Exception as exc:
+        logger.error(f"Gemini Vision error: {exc}")
+        return ""
