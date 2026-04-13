@@ -108,7 +108,7 @@ document.addEventListener("DOMContentLoaded", () => {
       Consider: "bg-yellow-800 text-yellow-200",
       Skip: "bg-red-800 text-red-200",
     };
-    return `<span class="px-3 py-1 rounded-full text-sm font-semibold uppercase tracking-wider ${map[rec] || "bg-gray-700 text-gray-200"}">${rec}</span>`;
+    return `<span class="px-3 py-1 rounded-full text-sm font-semibold uppercase tracking-wider ${map[rec] || "bg-gray-700 text-gray-200"}">${esc(rec)}</span>`;
   }
 
   function strengthDot(strength) {
@@ -151,7 +151,7 @@ document.addEventListener("DOMContentLoaded", () => {
           <div class="flex-1 min-w-0">
             <h3 class="text-lg font-semibold text-white truncate">${esc(d.company || "Unknown Company")}</h3>
             <p class="text-gray-400 text-sm mt-0.5">${esc(d.role || "")}</p>
-            <p class="text-gray-600 text-xs mt-0.5">${esc(d.location || "")}${d.region ? ` &middot; ${d.region}` : ""}</p>
+            <p class="text-gray-600 text-xs mt-0.5">${esc(d.location || "")}${d.region ? ` &middot; ${esc(d.region)}` : ""}</p>
             ${d.salary_listed ? `<p class="text-indigo-400 text-xs mt-1">💰 ${esc(d.salary_listed)}</p>` : ""}
           </div>
           <div class="flex flex-col items-end gap-2 shrink-0">
@@ -259,7 +259,7 @@ document.addEventListener("DOMContentLoaded", () => {
                ⚠️ ${esc(payload.duplicate_message || "Duplicate — not saved")}
              </span>`
           : `<button
-               onclick='saveJob(${JSON.stringify(JSON.stringify(payload))})'
+               onclick='saveJob(${esc(JSON.stringify(JSON.stringify(payload)))})'
                class="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors">
                Save to Tracker
              </button>`
