@@ -741,16 +741,37 @@ class JobScanner:
                 pass
         return (2,)
 
-    def _update_source_memory(self, url: str, jobs_found: int) -> None:
-        """Record that a source was just scanned and note how many jobs it yielded."""
-        mem = self._load_scan_memory()
+    def _update_source_memory(
+        self, url: str, jobs_found: int, job_url_snapshot: set | None = None
+    ) -> None:
+        """
+        Record that a source was just scanned.
+        Optionally persist the full set of job-link URLs seen this pass
+        so the next pass can diff and only process genuinely new ones.
+        """
+        mem  = self._load_scan_memory()
         prev = mem.get(url, {})
-        mem[url] = {
+        entry: dict = {
             "last_scanned":    datetime.now().isoformat(),
             "jobs_found_last": jobs_found,
             "scan_count":      prev.get("scan_count", 0) + 1,
         }
+        if job_url_snapshot is not None:
+            # Merge with existing snapshot so URLs removed from the page
+            # don't cause false "new" signals if they reappear later.
+            old_set = set(prev.get("known_urls", []))
+            new_set = old_set | job_url_snapshot
+            entry["known_urls"] = sorted(new_set)
+        elif "known_urls" in prev:
+            entry["known_urls"] = prev["known_urls"]   # preserve across passes
+
+        mem[url] = entry
         self._save_scan_memory(mem)
+
+    def _get_known_urls(self, url: str) -> set:
+        """Return the snapshot of job-link URLs seen at a source on the last crawl."""
+        mem = self._load_scan_memory()
+        return set(mem.get(url, {}).get("known_urls", []))
 
     # ── Static source list ─────────────────────────────────────────────────────
 
@@ -1105,17 +1126,58 @@ class JobScanner:
 
         self.stats.links_found += len(candidates)
 
-        # ── Phase D: Pipeline evaluation ──────────────────────────────────────
-        for job_url in candidates[:MAX_JOBS_PER_SOURCE]:
+        # ── Phase D: Delta filter — only process URLs new since last scan ──────
+        known_urls    = self._get_known_urls(url)
+        current_set   = set(candidates)
+        is_first_scan = len(known_urls) == 0
+
+        if is_first_scan:
+            # First time seeing this source → evaluate up to MAX_JOBS_PER_SOURCE
+            to_process = candidates[:MAX_JOBS_PER_SOURCE]
+            logger.debug(f"[Delta] {name}: first scan — evaluating {len(to_process)} candidates")
+        else:
+            # Subsequent scan → only new URLs not in the snapshot
+            new_urls   = [u for u in candidates if u not in known_urls]
+            to_process = new_urls   # no cap: all new postings matter
+            if new_urls:
+                logger.info(
+                    f"[Delta] {name}: {len(new_urls)} new URL(s) since last scan "
+                    f"(+{len(new_urls)} of {len(candidates)} total)"
+                )
+            else:
+                logger.debug(f"[Delta] {name}: no new job links since last scan — skipping evaluation")
+
+        # ── Phase E: Pipeline evaluation ──────────────────────────────────────
+        for job_url in to_process:
             if not self._running:
                 break
             self._run_pipeline(job_url, settings)
             time.sleep(DELAY_BETWEEN_PAGES)
 
         jobs_delta = self.stats.jobs_saved - jobs_before
-        self._update_source_memory(url, jobs_delta)
+
+        # ── Update scan memory with the full snapshot of links seen this pass ─
+        # Merges with old snapshot so URLs removed from the page don't
+        # trigger false "new" signals if they reappear.
+        self._update_source_memory(url, jobs_delta, job_url_snapshot=current_set)
+
+        # ── Update CompanySource DB record (careers URL + scan stats) ─────────
+        if self._app and stype == "career_page":
+            try:
+                with self._app.app_context():
+                    from models.database import db, CompanySource
+                    row = CompanySource.query.filter_by(source_url=url).first()
+                    if row:
+                        if careers_url != url:
+                            row.careers_url = careers_url
+                        row.last_scanned_at = datetime.utcnow()
+                        row.scan_count = (row.scan_count or 0) + 1
+                        db.session.commit()
+            except Exception as _dbe:
+                logger.debug(f"[Delta] DB update for {name}: {_dbe}")
+
         if jobs_delta:
-            logger.info(f"[Scanner] ✦ {name}: {jobs_delta} new job(s) found")
+            logger.info(f"[Scanner] ✦ {name}: {jobs_delta} new job(s) saved")
 
     # ── Full evaluation pipeline ──────────────────────────────────────────────
 

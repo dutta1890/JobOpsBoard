@@ -97,6 +97,51 @@ class Application(db.Model):
         return f"<Application {self.company} - {self.role}>"
 
 
+class CompanySource(db.Model):
+    """
+    User-provided company watchlist — persisted in the DB so it survives
+    redeployments and settings resets.
+    """
+    __tablename__ = "company_sources"
+
+    id              = db.Column(db.Integer, primary_key=True)
+    name            = db.Column(db.String(200))
+    source_url      = db.Column(db.String(500), unique=True, index=True, nullable=False)
+    careers_url     = db.Column(db.String(500))        # discovered careers page (updated after first crawl)
+    added_at        = db.Column(db.DateTime, default=datetime.utcnow)
+    last_scanned_at = db.Column(db.DateTime)
+    scan_count      = db.Column(db.Integer, default=0)
+    job_url_snapshot = db.Column(db.Text, default="[]") # JSON list — URLs seen on careers page at last scan
+
+    def get_snapshot(self) -> set:
+        try:
+            return set(json.loads(self.job_url_snapshot or "[]"))
+        except Exception:
+            return set()
+
+    def set_snapshot(self, urls: set) -> None:
+        self.job_url_snapshot = json.dumps(sorted(urls))
+
+    @classmethod
+    def upsert(cls, name: str, source_url: str) -> "CompanySource":
+        row = cls.query.filter_by(source_url=source_url).first()
+        if row is None:
+            row = cls(name=name, source_url=source_url)
+            db.session.add(row)
+            db.session.commit()
+        elif row.name != name:
+            row.name = name
+            db.session.commit()
+        return row
+
+    @classmethod
+    def all_as_list(cls) -> list:
+        return [
+            {"name": r.name, "careers": r.careers_url or r.source_url, "source_url": r.source_url}
+            for r in cls.query.order_by(cls.added_at).all()
+        ]
+
+
 class UserProfile(db.Model):
     """Single-row table that stores the user's profile / CV text."""
     __tablename__ = "user_profile"

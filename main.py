@@ -1082,15 +1082,21 @@ def create_app():
     @app.route("/scanner/companies", methods=["GET", "POST"])
     @login_required
     def scanner_companies():
-        """GET returns current user_companies list; POST replaces it."""
-        try:
-            with open(os.path.join(os.path.dirname(__file__), "data", "job_sources.json")) as f:
-                sources = json.load(f)
-        except Exception:
-            sources = {}
+        """GET returns current user_companies list; POST replaces it (DB + JSON)."""
+        from models.database import db, CompanySource
+        from urllib.parse import urlparse as _urlparse
 
         if request.method == "GET":
-            return jsonify({"companies": sources.get("user_companies", [])})
+            # Prefer DB; fall back to JSON for legacy data
+            db_rows = CompanySource.all_as_list()
+            if db_rows:
+                return jsonify({"companies": db_rows})
+            try:
+                with open(os.path.join(os.path.dirname(__file__), "data", "job_sources.json")) as f:
+                    sources = json.load(f)
+                return jsonify({"companies": sources.get("user_companies", [])})
+            except Exception:
+                return jsonify({"companies": []})
 
         body = request.get_json(silent=True) or {}
         companies = body.get("companies", [])
@@ -1098,18 +1104,48 @@ def create_app():
             return jsonify({"error": "companies must be a list"}), 400
 
         # Normalise each entry: accept {name, careers/url} dicts or plain URL strings
-        from urllib.parse import urlparse as _urlparse
         normalised = []
         for c in companies:
             if isinstance(c, str) and c.strip():
                 url = c.strip()
+                if not url.startswith("http"):
+                    url = "https://" + url
                 name = _urlparse(url).netloc or url
                 normalised.append({"name": name, "careers": url})
             elif isinstance(c, dict) and (c.get("careers") or c.get("url")):
-                normalised.append(c)
+                url = c.get("careers") or c.get("url", "")
+                if not url.startswith("http"):
+                    url = "https://" + url
+                normalised.append({**c, "careers": url})
 
+        # ── Persist to DB: upsert each entry, remove ones no longer in list ──
+        incoming_urls = {n["careers"] for n in normalised}
+        for n in normalised:
+            try:
+                CompanySource.upsert(n.get("name", ""), n["careers"])
+            except Exception as e:
+                logger.warning(f"CompanySource upsert error: {e}")
+                db.session.rollback()
+
+        # Remove DB entries not in the new list
+        for row in CompanySource.query.all():
+            if row.source_url not in incoming_urls:
+                db.session.delete(row)
+        try:
+            db.session.commit()
+        except Exception as e:
+            logger.warning(f"CompanySource DB commit error: {e}")
+            db.session.rollback()
+
+        # ── Also keep job_sources.json in sync for the scanner ────────────────
+        try:
+            src_path = os.path.join(os.path.dirname(__file__), "data", "job_sources.json")
+            with open(src_path) as f:
+                sources = json.load(f)
+        except Exception:
+            sources = {}
         sources["user_companies"] = normalised
-        with open(os.path.join(os.path.dirname(__file__), "data", "job_sources.json"), "w") as f:
+        with open(src_path, "w") as f:
             json.dump(sources, f, indent=2)
 
         return jsonify({"success": True, "count": len(normalised)})
