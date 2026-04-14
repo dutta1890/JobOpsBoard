@@ -2,10 +2,19 @@ import hashlib
 import json
 import re
 from datetime import datetime
+from urllib.parse import urlparse as _urlparse
 
 from flask_sqlalchemy import SQLAlchemy
 
 db = SQLAlchemy()
+
+
+def urlparse_netloc(url: str) -> str:
+    """Return the lowercased netloc of a URL, stripping www."""
+    try:
+        return _urlparse(url).netloc.lower().lstrip("www.")
+    except Exception:
+        return url
 
 
 class JobPosting(db.Model):
@@ -104,14 +113,16 @@ class CompanySource(db.Model):
     """
     __tablename__ = "company_sources"
 
-    id              = db.Column(db.Integer, primary_key=True)
-    name            = db.Column(db.String(200))
-    source_url      = db.Column(db.String(500), unique=True, index=True, nullable=False)
-    careers_url     = db.Column(db.String(500))        # discovered careers page (updated after first crawl)
-    added_at        = db.Column(db.DateTime, default=datetime.utcnow)
-    last_scanned_at = db.Column(db.DateTime)
-    scan_count      = db.Column(db.Integer, default=0)
-    job_url_snapshot = db.Column(db.Text, default="[]") # JSON list — URLs seen on careers page at last scan
+    id               = db.Column(db.Integer, primary_key=True)
+    name             = db.Column(db.String(200))
+    source_url       = db.Column(db.String(500), unique=True, index=True, nullable=False)
+    careers_url      = db.Column(db.String(500))
+    region           = db.Column(db.String(100), index=True)   # which region this company was discovered for
+    is_validated     = db.Column(db.Boolean, default=False)    # passed PM relevance check
+    added_at         = db.Column(db.DateTime, default=datetime.utcnow)
+    last_scanned_at  = db.Column(db.DateTime)
+    scan_count       = db.Column(db.Integer, default=0)
+    job_url_snapshot = db.Column(db.Text, default="[]")
 
     def get_snapshot(self) -> set:
         try:
@@ -123,23 +134,45 @@ class CompanySource(db.Model):
         self.job_url_snapshot = json.dumps(sorted(urls))
 
     @classmethod
-    def upsert(cls, name: str, source_url: str) -> "CompanySource":
+    def upsert(cls, name: str, source_url: str, region: str = None) -> "CompanySource":
         row = cls.query.filter_by(source_url=source_url).first()
         if row is None:
-            row = cls(name=name, source_url=source_url)
+            row = cls(name=name, source_url=source_url, region=region)
             db.session.add(row)
             db.session.commit()
-        elif row.name != name:
-            row.name = name
-            db.session.commit()
+        else:
+            changed = False
+            if row.name != name:
+                row.name = name; changed = True
+            if region and not row.region:
+                row.region = region; changed = True
+            if changed:
+                db.session.commit()
         return row
 
     @classmethod
-    def all_as_list(cls) -> list:
+    def all_as_list(cls, region: str = None) -> list:
+        q = cls.query.order_by(cls.added_at)
+        if region:
+            q = q.filter_by(region=region)
         return [
-            {"name": r.name, "careers": r.careers_url or r.source_url, "source_url": r.source_url}
-            for r in cls.query.order_by(cls.added_at).all()
+            {
+                "name": r.name,
+                "careers": r.careers_url or r.source_url,
+                "source_url": r.source_url,
+                "region": r.region or "primary",
+                "is_validated": r.is_validated,
+                "scan_count": r.scan_count or 0,
+            }
+            for r in q.all()
         ]
+
+    @classmethod
+    def known_domains(cls) -> set:
+        return {
+            urlparse_netloc(r.source_url)
+            for r in cls.query.with_entities(cls.source_url).all()
+        }
 
 
 class UserProfile(db.Model):

@@ -141,6 +141,9 @@ def _migrate_columns(db_instance) -> None:
     """Add any new columns that don't exist yet in the live SQLite database."""
     migrations = [
         "ALTER TABLE applications ADD COLUMN cover_letter_text TEXT",
+        # CompanySource: region tagging + PM validation flag (added v2)
+        "ALTER TABLE company_sources ADD COLUMN region VARCHAR(100)",
+        "ALTER TABLE company_sources ADD COLUMN is_validated BOOLEAN DEFAULT 0",
     ]
     with db_instance.engine.connect() as conn:
         for stmt in migrations:
@@ -1064,7 +1067,7 @@ def create_app():
     @app.route("/scanner/discover", methods=["POST"])
     @login_required
     def scanner_discover():
-        """Trigger a one-shot company discovery pass (runs in background thread)."""
+        """Trigger a one-shot company discovery pass across ALL target regions."""
         from services.job_scanner import job_scanner
         if not job_scanner._app:
             job_scanner._app = app
@@ -1080,6 +1083,34 @@ def create_app():
         _t.Thread(target=_run, daemon=True, name="discovery_manual").start()
         return jsonify({"started": True, "mode": "discovery"})
 
+    @app.route("/scanner/discover-region", methods=["POST"])
+    @login_required
+    def scanner_discover_region():
+        """
+        Trigger discovery for a SPECIFIC region on demand.
+        Body: { "region": "Dubai" }
+        Creates a new region repository if it doesn't exist yet,
+        runs PM-filtered Google discovery, and adds validated companies.
+        """
+        from services.job_scanner import job_scanner
+        body   = request.get_json(silent=True) or {}
+        region = (body.get("region") or "").strip()
+        if not region:
+            return jsonify({"error": "region is required"}), 400
+        if not job_scanner._app:
+            job_scanner._app = app
+        import threading as _t
+        def _run(r=region):
+            try:
+                job_scanner._discovery_pass(regions=[r])
+            except Exception as e:
+                logger.warning(f"[Discovery] Region '{r}' error: {e}")
+            finally:
+                if not job_scanner.is_running:
+                    job_scanner.stats.status = "idle"
+        _t.Thread(target=_run, daemon=True, name=f"discovery_{region.lower()}").start()
+        return jsonify({"started": True, "region": region})
+
     @app.route("/scanner/status")
     @login_required
     def scanner_status():
@@ -1093,10 +1124,44 @@ def create_app():
         if request.method == "GET":
             return jsonify(JobScanner.load_settings())
         body = request.get_json(silent=True) or {}
-        allowed = {"location", "cv_text", "search_keywords", "auto_start_agent", "auto_start_scanner"}
-        update  = {k: v for k, v in body.items() if k in allowed}
+        allowed = {
+            "location", "cv_text", "search_keywords",
+            "auto_start_agent", "auto_start_scanner",
+            "target_regions",   # list of extra regions to discover + scan
+        }
+        update = {k: v for k, v in body.items() if k in allowed}
+
+        # Coerce target_regions to a clean list of non-empty strings
+        if "target_regions" in update:
+            raw = update["target_regions"]
+            if isinstance(raw, str):
+                raw = [r.strip() for r in raw.split(",")]
+            update["target_regions"] = [str(r).strip() for r in raw if str(r).strip()]
+
+        old_settings = JobScanner.load_settings()
         JobScanner.save_settings(update)
-        return jsonify({"success": True})
+
+        # Auto-trigger discovery for any brand-new regions the user just added
+        old_regions = set(old_settings.get("target_regions") or [])
+        new_regions = set(update.get("target_regions") or [])
+        brand_new   = list(new_regions - old_regions)
+        if brand_new:
+            from services.job_scanner import job_scanner
+            if not job_scanner._app:
+                job_scanner._app = app
+            import threading as _t
+            def _auto_discover(regions=brand_new):
+                try:
+                    job_scanner._discovery_pass(regions=regions)
+                except Exception as exc:
+                    logger.warning(f"[Discovery] Auto-region discover error: {exc}")
+                finally:
+                    if not job_scanner.is_running:
+                        job_scanner.stats.status = "idle"
+            _t.Thread(target=_auto_discover, daemon=True, name="discovery_new_region").start()
+            logger.info(f"[Settings] Auto-triggered discovery for new regions: {brand_new}")
+
+        return jsonify({"success": True, "new_regions_triggered": brand_new})
 
     @app.route("/scanner/companies", methods=["GET", "POST"])
     @login_required

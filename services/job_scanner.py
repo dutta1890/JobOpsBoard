@@ -712,125 +712,82 @@ class JobScanner:
 
     # ── Company discovery pass ─────────────────────────────────────────────────
 
-    def _discovery_pass(self):
+    def _discovery_pass(self, regions: list[str] | None = None):
         """
-        Runs on a 24-hour cadence.  Uses Google searches to find companies
-        that are currently posting Performance Marketing roles but are NOT
-        yet tracked in our database.
+        Runs on a 24-hour cadence (or on demand per region).
+        Discovers NEW companies actively hiring PM profiles in each target region.
 
-        Flow:
-          1. Build discovery-specific Google queries
-          2. For each result URL → extract company domain + career page
-          3. If the domain is not in CompanySource DB → add it as a new source
-          4. Do an immediate first-scan crawl on each new company
-          5. Also sync new entries back into job_sources.json for static scanner
+        Filter gate: every candidate company must pass a PM relevance check
+        (at least 1 PM keyword cluster must appear on their careers page) before
+        it is added to the database.
+
+        Per-region repositories: each discovered company is tagged with its
+        region and stored in job_sources.json under `region_<region>` key.
         """
         if not self._app:
             return
 
-        settings = self.load_settings()
-        city     = settings.get("location", "Mumbai").strip()
-        keywords = settings.get("search_keywords", ["Performance Marketing"])
+        settings   = self.load_settings()
+        keywords   = settings.get("search_keywords", ["Performance Marketing"])
+        # If regions not specified, use all target_regions + primary location
+        if regions is None:
+            target_regions = settings.get("target_regions", [])
+            primary = settings.get("location", "Mumbai").strip()
+            if primary and primary not in target_regions:
+                target_regions = [primary] + list(target_regions)
+        else:
+            target_regions = regions
 
-        self.stats.status = "discovering"
-        logger.info("[Discovery] Starting company discovery pass")
+        if not target_regions:
+            target_regions = ["Mumbai"]
 
-        queries = self._build_discovery_queries(city, keywords)
-        seen_domains: set[str] = set()
-        new_companies: list[dict] = []
+        logger.info(f"[Discovery] Starting discovery for regions: {target_regions}")
 
-        # ── Load already-known domains ─────────────────────────────────────────
+        # ── Load already-known domains (from DB + job_sources.json) ───────────
         with self._app.app_context():
-            from models.database import CompanySource
-            known_domains = {
-                urlparse(r.source_url).netloc.lower().lstrip("www.")
-                for r in CompanySource.query.all()
-            }
+            from models.database import CompanySource, urlparse_netloc
+            known_domains: set[str] = CompanySource.known_domains()
 
-        # Also include static sources from job_sources.json
         try:
             with open(SOURCES_PATH) as f:
                 static_data = json.load(f)
-            for section in static_data.values():
-                items = section if isinstance(section, list) else []
-                for item in items:
+            for section_items in static_data.values():
+                for item in (section_items if isinstance(section_items, list) else []):
                     if isinstance(item, dict):
                         u = item.get("careers") or item.get("url", "")
                         if u:
-                            d = urlparse(u).netloc.lower().lstrip("www.")
-                            known_domains.add(d)
+                            known_domains.add(urlparse(u).netloc.lower().lstrip("www."))
         except Exception:
             pass
 
-        # ── Run discovery queries ──────────────────────────────────────────────
-        for query in queries:
+        all_new_companies: list[dict] = []
+
+        for region in target_regions:
             if not self._running:
                 break
-            urls = _google_search(query, num=10)
-            for result_url in urls:
-                if not self._running:
-                    break
-                domain = urlparse(result_url).netloc.lower().lstrip("www.")
+            self.stats.status = "discovering"
+            logger.info(f"[Discovery] Searching region: {region}")
+            region_companies = self._discover_region(
+                region, keywords, known_domains
+            )
+            all_new_companies.extend(region_companies)
+            # Keep known_domains fresh so cross-region duplicates are skipped
+            for nc in region_companies:
+                known_domains.add(urlparse(nc["source_url"]).netloc.lower().lstrip("www."))
 
-                # Skip job portals and known domains
-                if any(d in domain for d in SKIP_SOURCE_DOMAINS):
-                    continue
-                if domain in known_domains or domain in seen_domains:
-                    continue
-
-                seen_domains.add(domain)
-
-                # Extract a clean company name from the domain
-                company_name = self._name_from_domain(domain)
-
-                # Attempt to find career page for this new company
-                base_url = f"https://{domain}"
-                careers_url = self._find_careers_page(base_url) or base_url
-
-                logger.info(f"[Discovery] New company found: {company_name} — {careers_url}")
-
-                new_companies.append({
-                    "name":        company_name,
-                    "source_url":  base_url,
-                    "careers_url": careers_url,
-                })
-            time.sleep(2.5)  # polite delay
-
-        if not new_companies:
+        if not all_new_companies:
             logger.info("[Discovery] No new companies found this pass")
             return
 
-        # ── Persist new companies to DB + JSON ────────────────────────────────
-        with self._app.app_context():
-            from models.database import db, CompanySource
-            added = 0
-            for nc in new_companies:
-                try:
-                    row = CompanySource.upsert(nc["name"], nc["source_url"])
-                    if nc["careers_url"] != nc["source_url"]:
-                        row.careers_url = nc["careers_url"]
-                    db.session.commit()
-                    added += 1
-                    known_domains.add(urlparse(nc["source_url"]).netloc.lower().lstrip("www."))
-                except Exception as e:
-                    logger.warning(f"[Discovery] DB insert error for {nc['name']}: {e}")
-                    db.session.rollback()
-
-        self.stats.companies_discovered += len(new_companies)
-        logger.info(f"[Discovery] Added {len(new_companies)} new compan(ies) to watchlist")
-
-        # Sync back to job_sources.json so next static build includes them
+        self.stats.companies_discovered += len(all_new_companies)
+        logger.info(f"[Discovery] Added {len(all_new_companies)} new compan(ies) across all regions")
         self._sync_db_companies_to_json()
 
-        # ── Immediately do a first-scan crawl on each new company ─────────────
-        for nc in new_companies:
+        # ── Immediately crawl each new company (first-scan) ───────────────────
+        for nc in all_new_companies:
             if not self._running:
                 break
-            src = {
-                "name": nc["name"],
-                "url":  nc["careers_url"],
-                "type": "career_page",
-            }
+            src = {"name": nc["name"], "url": nc["careers_url"], "type": "career_page"}
             try:
                 self._crawl_source(src, settings)
             except Exception as e:
@@ -839,61 +796,184 @@ class JobScanner:
 
         logger.info("[Discovery] Company discovery pass complete")
 
-    def _build_discovery_queries(self, city: str, keywords: list[str]) -> list[str]:
+    def _discover_region(
+        self,
+        region: str,
+        keywords: list[str],
+        known_domains: set,
+    ) -> list[dict]:
         """
-        Queries designed to surface company career pages and ATS postings
-        for PM roles — NOT job portal listings.
-        Covers a mix of:
-          • City-specific postings on known ATS platforms
-          • Broad searches for companies currently hiring PM profiles
+        Run discovery queries for one region.
+        Returns list of new company dicts that passed the PM relevance gate.
+        """
+        queries      = self._build_discovery_queries(region, keywords)
+        seen_domains: set[str] = set()
+        new_companies: list[dict] = []
+
+        for query in queries:
+            if not self._running:
+                break
+            urls = _google_search(query, num=10)
+            for result_url in urls:
+                if not self._running:
+                    break
+                domain = urlparse(result_url).netloc.lower().lstrip("www.")
+                if any(d in domain for d in SKIP_SOURCE_DOMAINS):
+                    continue
+                if domain in known_domains or domain in seen_domains:
+                    continue
+                seen_domains.add(domain)
+
+                company_name = self._name_from_domain(domain)
+                base_url     = f"https://{domain}"
+                careers_url  = self._find_careers_page(base_url) or base_url
+
+                # ── PM relevance gate ──────────────────────────────────────────
+                # ATS URLs are inherently job postings — trust them directly.
+                # For company career pages, require at least 1 PM keyword cluster.
+                is_ats_result = bool(JOB_URL_RE.search(result_url))
+                if not is_ats_result:
+                    if not self._validate_pm_relevance(careers_url):
+                        logger.debug(
+                            f"[Discovery] Skipped (no PM signals): {company_name} — {careers_url}"
+                        )
+                        continue
+
+                logger.info(
+                    f"[Discovery] ✓ Relevant [{region}]: {company_name} — {careers_url}"
+                )
+
+                # Persist to DB
+                with self._app.app_context():
+                    from models.database import db, CompanySource
+                    try:
+                        row = CompanySource.upsert(company_name, base_url, region=region)
+                        if careers_url != base_url:
+                            row.careers_url = careers_url
+                        row.is_validated = True
+                        db.session.commit()
+                    except Exception as e:
+                        logger.warning(f"[Discovery] DB error {company_name}: {e}")
+                        db.session.rollback()
+                        continue
+
+                new_companies.append({
+                    "name": company_name, "source_url": base_url,
+                    "careers_url": careers_url, "region": region,
+                })
+
+            time.sleep(2.5)
+
+        logger.info(f"[Discovery] Region '{region}': {len(new_companies)} new companies added")
+        return new_companies
+
+    def _validate_pm_relevance(self, careers_url: str) -> bool:
+        """
+        Quick PM relevance check for a candidate company.
+        Fetch their careers page (or the result URL) and check whether at
+        least ONE PM keyword cluster appears in the page text.
+
+        This prevents adding companies that just happen to use marketing
+        words in their copy but aren't actually hiring for PM roles.
+        """
+        try:
+            r = requests.get(careers_url, headers=HEADERS, timeout=12, allow_redirects=True)
+            if r.status_code != 200:
+                return False
+            soup = BeautifulSoup(r.text, "html.parser")
+            for tag in soup(["script", "style", "nav", "footer", "noscript"]):
+                tag.decompose()
+            text = soup.get_text(separator=" ", strip=True)[:5000]
+            # Must match at least ONE PM cluster (not just a generic marketing page)
+            for pat in _PM_GROUPS:
+                if pat.search(text):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _build_discovery_queries(self, region: str, keywords: list[str]) -> list[str]:
+        """
+        Region-aware discovery queries.  Each query is scoped to the given
+        region so results are geographically relevant.
+
+        Covers:
+          • ATS platform scans (each result = a real company currently hiring)
           • Sector-specific searches (D2C, agency, SaaS, FMCG, fintech)
+          • Broad "we are hiring" signals in the region
+          • Region-specific Indian / UAE / Singapore / European boards
         """
-        c   = city or "Mumbai"
+        c   = region or "Mumbai"
         kw0 = keywords[0] if keywords else "Performance Marketing"
         kw_or = " OR ".join(f'"{k}"' for k in keywords[:4]) if keywords else f'"{kw0}"'
 
-        return [
-            # ATS platform searches (each result = a company hiring PM)
+        queries = [
+            # ATS platform searches (high-confidence: real job posting = real company)
             f'site:lever.co ({kw_or}) "{c}"',
             f'site:greenhouse.io ({kw_or}) "{c}"',
             f'site:ashbyhq.com ({kw_or}) "{c}"',
             f'site:workable.com ({kw_or}) "{c}"',
             f'site:bamboohr.com/jobs ({kw_or}) "{c}"',
             f'site:smartrecruiters.com ({kw_or}) "{c}"',
-            # Indian job boards with public access
+            f'site:breezy.hr ({kw_or}) "{c}"',
+            # Job boards with public access
             f'site:cutshort.io {kw0} {c}',
             f'site:wellfound.com {kw0} {c}',
             f'site:instahyre.com {kw0} {c}',
-            # Sector-specific company discovery
-            f'D2C brand "performance marketing" hiring {c} -site:linkedin.com',
-            f'digital agency "paid media" OR "biddable" hiring {c} -site:naukri.com',
-            f'e-commerce startup "growth marketing" OR "user acquisition" {c} apply',
-            f'FMCG "performance marketing manager" job {c} apply -site:linkedin.com',
-            f'fintech "paid media" OR "growth marketing" job {c} hiring',
-            f'SaaS startup "performance marketing" India hiring apply',
-            # Broad discovery queries
-            f'"{c}" ({kw_or}) hiring "apply now" -site:linkedin.com -site:naukri.com',
-            f'({kw_or}) "we are hiring" OR "join our team" {c} -site:linkedin.com',
+            # Sector-specific company discovery (scoped to region)
+            f'D2C brand "performance marketing" OR "paid media" hiring {c} -site:linkedin.com',
+            f'digital agency "biddable media" OR "paid media" hiring {c} -site:naukri.com',
+            f'e-commerce "growth marketing" OR "user acquisition" hiring {c} apply',
+            f'FMCG "performance marketing manager" OR "paid media manager" job {c} apply',
+            f'fintech "paid media" OR "growth marketing" OR "user acquisition" job {c}',
+            f'startup "performance marketing" OR "paid performance" {c} hiring apply',
+            # Broad "we are hiring" signals
+            f'"{c}" ({kw_or}) "apply now" OR "we are hiring" -site:linkedin.com -site:naukri.com',
+            f'({kw_or}) "join our team" OR "open roles" {c} -site:linkedin.com',
         ]
+
+        # ── Region-specific extras ─────────────────────────────────────────────
+        c_lower = c.lower()
+        if any(x in c_lower for x in ("dubai", "abu dhabi", "uae")):
+            queries += [
+                f'"{c}" "performance marketing" hiring careers apply -site:linkedin.com',
+                f'site:bayt.com {kw0} {c}',
+            ]
+        elif any(x in c_lower for x in ("singapore", "sing")):
+            queries += [
+                f'Singapore agency "performance marketing" OR "paid media" apply careers',
+                f'site:mycareersfuture.gov.sg {kw0}',
+            ]
+        elif any(x in c_lower for x in ("london", "berlin", "amsterdam", "amsterdam", "stockholm")):
+            queries += [
+                f'"{c}" "performance marketing" agency OR brand hiring apply',
+                f'site:otta.com {kw0} {c}',
+            ]
+
+        return queries
 
     @staticmethod
     def _name_from_domain(domain: str) -> str:
         """Extract a readable company name from a domain."""
-        # Strip TLD and subdomains: e.g. "careers.mamaearth.in" → "Mamaearth"
         parts = domain.split(".")
-        # Take the last meaningful word before the TLD
-        candidates = [p for p in parts if p not in ("www", "careers", "jobs", "in", "com", "co", "io")]
+        tld_like = {"www", "careers", "jobs", "in", "com", "co", "io", "ai",
+                    "net", "org", "app", "uk", "sg", "ae", "de", "nl"}
+        candidates = [p for p in parts if p not in tld_like]
         name = candidates[0] if candidates else domain
         return name.replace("-", " ").replace("_", " ").title()
 
     def _sync_db_companies_to_json(self) -> None:
-        """Merge DB company list into job_sources.json user_companies array."""
+        """
+        Sync DB company list → job_sources.json.
+        Primary companies → user_companies
+        Region-specific companies → region_<region_slug> sections
+        """
         try:
             if not self._app:
                 return
             with self._app.app_context():
                 from models.database import CompanySource
-                db_list = CompanySource.all_as_list()
+                all_rows = CompanySource.all_as_list()
 
             try:
                 with open(SOURCES_PATH) as f:
@@ -901,15 +981,30 @@ class JobScanner:
             except Exception:
                 sources = {}
 
-            existing = {c.get("careers", "") for c in sources.get("user_companies", [])}
-            new_entries = [c for c in db_list if c["careers"] not in existing]
-            sources.setdefault("user_companies", []).extend(new_entries)
+            # Group by region
+            from collections import defaultdict
+            by_region: dict[str, list] = defaultdict(list)
+            for row in all_rows:
+                r = (row.get("region") or "primary").strip().lower()
+                by_region[r].append(row)
 
-            with open(SOURCES_PATH, "w") as f:
-                json.dump(sources, f, indent=2)
+            changed = False
+            for region_slug, companies in by_region.items():
+                if region_slug in ("primary", "none", ""):
+                    key = "user_companies"
+                else:
+                    key = f"region_{region_slug.replace(' ', '_')}"
+                existing_urls = {c.get("careers", "") for c in sources.get(key, [])}
+                new_entries   = [c for c in companies if c["careers"] not in existing_urls]
+                if new_entries:
+                    sources.setdefault(key, []).extend(new_entries)
+                    changed = True
 
-            if new_entries:
-                logger.debug(f"[Discovery] Synced {len(new_entries)} new companies to job_sources.json")
+            if changed:
+                with open(SOURCES_PATH, "w") as f:
+                    json.dump(sources, f, indent=2)
+                logger.debug("[Discovery] Synced DB companies to job_sources.json")
+
         except Exception as e:
             logger.warning(f"[Discovery] JSON sync error: {e}")
 
@@ -1106,6 +1201,16 @@ class JobScanner:
 
         for name, url in self._extra_pm_sources(city, query):
             _add(name, url, "search_results", tier=5)
+
+        # ── Region-specific repositories (auto-discovered companies per region) ─
+        # Keys like `region_dubai`, `region_singapore` etc. are Tier-0 priority
+        # just like user_companies — they are curated for specific job markets.
+        for key, items in data.items():
+            if key.startswith("region_") and isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict):
+                        c = item.get("careers") or item.get("url", "")
+                        _add(item.get("name", c), c, "career_page", tier=0)
 
         # Sort: tier ASC, then rank tuple (never-seen → found-jobs → expired → cooldown)
         tiered.sort(key=lambda x: (x[0], x[1]))

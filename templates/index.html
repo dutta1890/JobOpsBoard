@@ -298,6 +298,29 @@
 
     </div>
 
+    <!-- Target Regions -->
+    <div class="mt-4">
+      <label class="block text-xs text-gray-400 mb-1.5 font-medium">
+        Target Regions
+        <span class="text-gray-600">(separate repositories — each region gets its own PM-filtered company database)</span>
+      </label>
+      <div class="flex items-center gap-2">
+        <input id="region-input" type="text" placeholder="e.g. Dubai, Singapore, Berlin"
+          class="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200
+                 placeholder-gray-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();_addRegion();}"/>
+        <button onclick="_addRegion()"
+          class="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-lg transition-colors border border-gray-600 shrink-0">
+          + Add
+        </button>
+      </div>
+      <div id="region-tags" class="flex flex-wrap gap-2 mt-2 min-h-[24px]"></div>
+      <p class="text-xs text-gray-600 mt-1">
+        Adding a new region auto-starts a PM-filtered discovery pass for that region.
+        Click 🔭 on any tag to re-run discovery for that region only.
+      </p>
+    </div>
+
     <!-- CV -->
     <div class="mt-4">
       <div class="flex items-center justify-between mb-1.5">
@@ -533,6 +556,8 @@
 
   <script>
     // ── Settings ──────────────────────────────────────────────────────────────
+    let _targetRegions = [];
+
     function loadSettings() {
       fetch('/scanner/settings')
         .then(r => r.json())
@@ -543,8 +568,52 @@
           document.getElementById('setting-keywords').value  = kw;
           document.getElementById('setting-auto-scanner').checked = !!s.auto_start_scanner;
           document.getElementById('setting-auto-agent').checked   = !!s.auto_start_agent;
+          _targetRegions = Array.isArray(s.target_regions) ? s.target_regions : [];
+          _renderRegionTags();
         }).catch(() => {});
     }
+
+    function _renderRegionTags() {
+      const wrap = document.getElementById('region-tags');
+      if (!wrap) return;
+      wrap.innerHTML = '';
+      _targetRegions.forEach((r, i) => {
+        const tag = document.createElement('span');
+        tag.className = 'inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-900 text-indigo-300 rounded-full text-xs font-medium';
+        tag.innerHTML = `${r}
+          <button onclick="_removeRegion(${i})" class="text-indigo-400 hover:text-red-400 leading-none">&times;</button>
+          <button onclick="_discoverRegion('${r}')" title="Run discovery for ${r}" class="text-indigo-400 hover:text-green-400 leading-none text-xs">🔭</button>`;
+        wrap.appendChild(tag);
+      });
+    }
+
+    function _addRegion() {
+      const inp = document.getElementById('region-input');
+      const val = inp.value.trim();
+      if (!val) return;
+      if (!_targetRegions.includes(val)) {
+        _targetRegions.push(val);
+        _renderRegionTags();
+      }
+      inp.value = '';
+    }
+
+    function _removeRegion(idx) {
+      _targetRegions.splice(idx, 1);
+      _renderRegionTags();
+    }
+
+    function _discoverRegion(region) {
+      if (!confirm(`Run discovery pass for "${region}"? This will search Google for PM-relevant companies in this region and add them to a dedicated repository.`)) return;
+      fetch('/scanner/discover-region', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ region }),
+      }).then(r => r.json()).then(d => {
+        if (d.started) alert(`🔭 Discovery started for "${region}". Check the scanner logs for progress.`);
+      });
+    }
+
     function saveSettings() {
       const kwRaw = document.getElementById('setting-keywords').value;
       const kws   = kwRaw.split(',').map(k => k.trim()).filter(Boolean);
@@ -554,15 +623,21 @@
         search_keywords:    kws.length ? kws : ['Performance Marketing'],
         auto_start_scanner: document.getElementById('setting-auto-scanner').checked,
         auto_start_agent:   document.getElementById('setting-auto-agent').checked,
+        target_regions:     _targetRegions,
       };
       fetch('/scanner/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-      }).then(r => r.json()).then(() => {
+      }).then(r => r.json()).then(d => {
         const msg = document.getElementById('settings-saved-msg');
         msg.classList.remove('hidden');
-        setTimeout(() => msg.classList.add('hidden'), 3000);
+        let txt = '✓ Saved';
+        if (d.new_regions_triggered && d.new_regions_triggered.length) {
+          txt += ` — 🔭 Discovery started for: ${d.new_regions_triggered.join(', ')}`;
+        }
+        msg.textContent = txt;
+        setTimeout(() => { msg.classList.add('hidden'); msg.textContent = '✓ Saved'; }, 5000);
       });
     }
     loadSettings();
