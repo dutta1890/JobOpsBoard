@@ -434,7 +434,7 @@
           Continuously finds Performance Marketing jobs, evaluates them, and auto-queues Grade A &amp; B for the agent
         </p>
       </div>
-      <div class="flex gap-2 shrink-0">
+      <div class="flex gap-2 shrink-0 flex-wrap justify-end">
         <button onclick="scanOnce()" id="scan-once-btn"
           class="bg-indigo-600 hover:bg-indigo-700 px-3 py-2 rounded text-sm font-medium transition-colors">
           ▶ Scan Once
@@ -442,6 +442,11 @@
         <button onclick="startScanner()" id="scanner-start-btn"
           class="bg-green-600 hover:bg-green-700 px-3 py-2 rounded text-sm font-medium transition-colors">
           🔁 Continuous
+        </button>
+        <button onclick="runDiscovery()" id="discover-btn"
+          title="Find new companies posting PM roles and add them to your watchlist"
+          class="bg-purple-700 hover:bg-purple-600 px-3 py-2 rounded text-sm font-medium transition-colors">
+          🔭 Discover
         </button>
         <button onclick="stopScanner()" id="scanner-stop-btn"
           class="bg-red-600 hover:bg-red-700 px-3 py-2 rounded text-sm font-medium transition-colors hidden">
@@ -451,7 +456,7 @@
     </div>
 
     <!-- Stats grid — top row: headline numbers -->
-    <div class="grid grid-cols-4 gap-2 mb-2">
+    <div class="grid grid-cols-5 gap-2 mb-2">
       <div class="bg-gray-700 rounded-lg p-2.5 text-center">
         <div id="sc-links" class="text-xl font-bold text-white">0</div>
         <div class="text-gray-400 text-xs mt-0.5">Links Found</div>
@@ -467,6 +472,10 @@
       <div class="bg-yellow-900/60 rounded-lg p-2.5 text-center">
         <div id="sc-queued" class="text-xl font-bold text-yellow-300">0</div>
         <div class="text-gray-400 text-xs mt-0.5">Queued</div>
+      </div>
+      <div class="bg-purple-900/60 rounded-lg p-2.5 text-center">
+        <div id="sc-discovered" class="text-xl font-bold text-purple-300">0</div>
+        <div class="text-gray-400 text-xs mt-0.5">Co. Found</div>
       </div>
     </div>
 
@@ -604,6 +613,17 @@
         body: JSON.stringify({ single_pass: true })
       }).then(r => r.json()).then(updateScannerUI);
     }
+    function runDiscovery() {
+      fetch('/scanner/discover', { method: 'POST' })
+        .then(r => r.json())
+        .then(() => {
+          updateScannerUI();
+          // Refresh the company watchlist after discovery adds new ones
+          setTimeout(() => {
+            loadCompanies && loadCompanies();
+          }, 3000);
+        });
+    }
 
     function updateScannerUI() {
       fetch('/scanner/status')
@@ -616,25 +636,33 @@
           const currentBox = document.getElementById('scanner-current');
           const s = data.stats || {};
 
-          if (data.is_running) {
-            const lbl = data.status === 'scanning' ? 'Scanning…' : 'Waiting next pass…';
+          const discoverBtn = document.getElementById('discover-btn');
+          if (data.is_running || data.status === 'discovering') {
+            let lbl = 'Scanning…';
+            if (data.status === 'waiting')    lbl = 'Waiting next pass…';
+            if (data.status === 'discovering') lbl = 'Discovering companies…';
             badge.textContent = lbl;
-            badge.className   = 'px-2 py-0.5 text-xs rounded bg-indigo-900 text-indigo-300';
+            badge.className   = data.status === 'discovering'
+              ? 'px-2 py-0.5 text-xs rounded bg-purple-900 text-purple-300'
+              : 'px-2 py-0.5 text-xs rounded bg-indigo-900 text-indigo-300';
             startBtn.classList.add('hidden');
             onceBtn.classList.add('hidden');
+            if (discoverBtn) discoverBtn.classList.add('hidden');
             stopBtn.classList.remove('hidden');
           } else {
             badge.textContent = 'Idle';
             badge.className   = 'px-2 py-0.5 text-xs rounded bg-gray-700 text-gray-400';
             startBtn.classList.remove('hidden');
             onceBtn.classList.remove('hidden');
+            if (discoverBtn) discoverBtn.classList.remove('hidden');
             stopBtn.classList.add('hidden');
           }
 
-          document.getElementById('sc-links').textContent  = s.links_found      || 0;
-          document.getElementById('sc-ai').textContent    = s.jobs_sent_to_ai  || 0;
-          document.getElementById('sc-saved').textContent = s.jobs_saved       || 0;
-          document.getElementById('sc-queued').textContent= s.jobs_queued      || 0;
+          document.getElementById('sc-links').textContent      = s.links_found           || 0;
+          document.getElementById('sc-ai').textContent         = s.jobs_sent_to_ai       || 0;
+          document.getElementById('sc-saved').textContent      = s.jobs_saved            || 0;
+          document.getElementById('sc-queued').textContent     = s.jobs_queued           || 0;
+          document.getElementById('sc-discovered').textContent = s.companies_discovered  || 0;
 
           // Filter breakdown
           const f = s.filters || {};

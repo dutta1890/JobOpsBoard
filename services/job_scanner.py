@@ -59,7 +59,9 @@ HEADERS = {
 REQUEST_TIMEOUT      = 18
 DELAY_BETWEEN_PAGES  = 2.5   # seconds between individual page fetches
 MAX_JOBS_PER_SOURCE  = 6     # max individual job pages to evaluate per source
-SCAN_INTERVAL_HOURS  = 3     # hours between continuous-mode passes
+SCAN_INTERVAL_HOURS  = 3     # hours between continuous-mode passes (delta)
+DISCOVERY_INTERVAL_HOURS = 24   # hours between company-discovery passes
+DISCOVERY_EVERY_N_PASSES = 8   # run discovery every N delta passes (≈ 24h at 3h cadence)
 
 # Minimum characters for a page to be considered a real job description
 MIN_JD_LENGTH = 350
@@ -501,11 +503,12 @@ class ScanStats:
     jobs_ai_filtered:  int = 0
     jobs_saved:        int = 0
     jobs_queued:       int = 0
-    errors:            int = 0
-    current_source:    str = ""
-    status:            str = "idle"
-    last_run_start:    Optional[str] = None
-    last_run_end:      Optional[str] = None
+    errors:              int = 0
+    companies_discovered: int = 0   # new companies found by the discovery pass
+    current_source:      str = ""
+    status:              str = "idle"
+    last_run_start:      Optional[str] = None
+    last_run_end:        Optional[str] = None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -591,7 +594,8 @@ class JobScanner:
                 "jobs_sent_to_ai": s.jobs_sent_to_ai,
                 "ai_filtered":     s.jobs_ai_filtered,
                 "pre_filtered":    pre_filtered,
-                "errors":          s.errors,
+                "errors":               s.errors,
+                "companies_discovered": s.companies_discovered,
                 "filters": {
                     "empty_jd":    s.skipped_empty,
                     "too_junior":  s.skipped_junior,
@@ -631,8 +635,16 @@ class JobScanner:
     # ── Main loops ─────────────────────────────────────────────────────────────
 
     def _continuous_loop(self):
+        pass_count = 0
         while self._running:
-            self._scan_pass()
+            # Always run the delta pass (fast check of existing companies)
+            self._scan_pass(mode="delta")
+
+            # Every DISCOVERY_EVERY_N_PASSES delta passes also run discovery
+            if pass_count % DISCOVERY_EVERY_N_PASSES == 0:
+                self._discovery_pass()
+
+            pass_count += 1
             self.stats.status = "waiting"
             slept = 0
             while slept < SCAN_INTERVAL_HOURS * 3600 and self._running:
@@ -640,7 +652,7 @@ class JobScanner:
                 slept += 10
         self.stats.status = "idle"
 
-    def _scan_pass(self):
+    def _scan_pass(self, mode: str = "full"):
         self.stats.last_run_start = datetime.now().isoformat()
         self.stats.status         = "scanning"
 
@@ -697,6 +709,209 @@ class JobScanner:
             f"links:{s.links_found} pre-filtered:{pre} "
             f"ai-sent:{s.jobs_sent_to_ai} saved:{s.jobs_saved} queued:{s.jobs_queued}"
         )
+
+    # ── Company discovery pass ─────────────────────────────────────────────────
+
+    def _discovery_pass(self):
+        """
+        Runs on a 24-hour cadence.  Uses Google searches to find companies
+        that are currently posting Performance Marketing roles but are NOT
+        yet tracked in our database.
+
+        Flow:
+          1. Build discovery-specific Google queries
+          2. For each result URL → extract company domain + career page
+          3. If the domain is not in CompanySource DB → add it as a new source
+          4. Do an immediate first-scan crawl on each new company
+          5. Also sync new entries back into job_sources.json for static scanner
+        """
+        if not self._app:
+            return
+
+        settings = self.load_settings()
+        city     = settings.get("location", "Mumbai").strip()
+        keywords = settings.get("search_keywords", ["Performance Marketing"])
+
+        self.stats.status = "discovering"
+        logger.info("[Discovery] Starting company discovery pass")
+
+        queries = self._build_discovery_queries(city, keywords)
+        seen_domains: set[str] = set()
+        new_companies: list[dict] = []
+
+        # ── Load already-known domains ─────────────────────────────────────────
+        with self._app.app_context():
+            from models.database import CompanySource
+            known_domains = {
+                urlparse(r.source_url).netloc.lower().lstrip("www.")
+                for r in CompanySource.query.all()
+            }
+
+        # Also include static sources from job_sources.json
+        try:
+            with open(SOURCES_PATH) as f:
+                static_data = json.load(f)
+            for section in static_data.values():
+                items = section if isinstance(section, list) else []
+                for item in items:
+                    if isinstance(item, dict):
+                        u = item.get("careers") or item.get("url", "")
+                        if u:
+                            d = urlparse(u).netloc.lower().lstrip("www.")
+                            known_domains.add(d)
+        except Exception:
+            pass
+
+        # ── Run discovery queries ──────────────────────────────────────────────
+        for query in queries:
+            if not self._running:
+                break
+            urls = _google_search(query, num=10)
+            for result_url in urls:
+                if not self._running:
+                    break
+                domain = urlparse(result_url).netloc.lower().lstrip("www.")
+
+                # Skip job portals and known domains
+                if any(d in domain for d in SKIP_SOURCE_DOMAINS):
+                    continue
+                if domain in known_domains or domain in seen_domains:
+                    continue
+
+                seen_domains.add(domain)
+
+                # Extract a clean company name from the domain
+                company_name = self._name_from_domain(domain)
+
+                # Attempt to find career page for this new company
+                base_url = f"https://{domain}"
+                careers_url = self._find_careers_page(base_url) or base_url
+
+                logger.info(f"[Discovery] New company found: {company_name} — {careers_url}")
+
+                new_companies.append({
+                    "name":        company_name,
+                    "source_url":  base_url,
+                    "careers_url": careers_url,
+                })
+            time.sleep(2.5)  # polite delay
+
+        if not new_companies:
+            logger.info("[Discovery] No new companies found this pass")
+            return
+
+        # ── Persist new companies to DB + JSON ────────────────────────────────
+        with self._app.app_context():
+            from models.database import db, CompanySource
+            added = 0
+            for nc in new_companies:
+                try:
+                    row = CompanySource.upsert(nc["name"], nc["source_url"])
+                    if nc["careers_url"] != nc["source_url"]:
+                        row.careers_url = nc["careers_url"]
+                    db.session.commit()
+                    added += 1
+                    known_domains.add(urlparse(nc["source_url"]).netloc.lower().lstrip("www."))
+                except Exception as e:
+                    logger.warning(f"[Discovery] DB insert error for {nc['name']}: {e}")
+                    db.session.rollback()
+
+        self.stats.companies_discovered += len(new_companies)
+        logger.info(f"[Discovery] Added {len(new_companies)} new compan(ies) to watchlist")
+
+        # Sync back to job_sources.json so next static build includes them
+        self._sync_db_companies_to_json()
+
+        # ── Immediately do a first-scan crawl on each new company ─────────────
+        for nc in new_companies:
+            if not self._running:
+                break
+            src = {
+                "name": nc["name"],
+                "url":  nc["careers_url"],
+                "type": "career_page",
+            }
+            try:
+                self._crawl_source(src, settings)
+            except Exception as e:
+                logger.warning(f"[Discovery] First-scan error {nc['name']}: {e}")
+            time.sleep(DELAY_BETWEEN_PAGES)
+
+        logger.info("[Discovery] Company discovery pass complete")
+
+    def _build_discovery_queries(self, city: str, keywords: list[str]) -> list[str]:
+        """
+        Queries designed to surface company career pages and ATS postings
+        for PM roles — NOT job portal listings.
+        Covers a mix of:
+          • City-specific postings on known ATS platforms
+          • Broad searches for companies currently hiring PM profiles
+          • Sector-specific searches (D2C, agency, SaaS, FMCG, fintech)
+        """
+        c   = city or "Mumbai"
+        kw0 = keywords[0] if keywords else "Performance Marketing"
+        kw_or = " OR ".join(f'"{k}"' for k in keywords[:4]) if keywords else f'"{kw0}"'
+
+        return [
+            # ATS platform searches (each result = a company hiring PM)
+            f'site:lever.co ({kw_or}) "{c}"',
+            f'site:greenhouse.io ({kw_or}) "{c}"',
+            f'site:ashbyhq.com ({kw_or}) "{c}"',
+            f'site:workable.com ({kw_or}) "{c}"',
+            f'site:bamboohr.com/jobs ({kw_or}) "{c}"',
+            f'site:smartrecruiters.com ({kw_or}) "{c}"',
+            # Indian job boards with public access
+            f'site:cutshort.io {kw0} {c}',
+            f'site:wellfound.com {kw0} {c}',
+            f'site:instahyre.com {kw0} {c}',
+            # Sector-specific company discovery
+            f'D2C brand "performance marketing" hiring {c} -site:linkedin.com',
+            f'digital agency "paid media" OR "biddable" hiring {c} -site:naukri.com',
+            f'e-commerce startup "growth marketing" OR "user acquisition" {c} apply',
+            f'FMCG "performance marketing manager" job {c} apply -site:linkedin.com',
+            f'fintech "paid media" OR "growth marketing" job {c} hiring',
+            f'SaaS startup "performance marketing" India hiring apply',
+            # Broad discovery queries
+            f'"{c}" ({kw_or}) hiring "apply now" -site:linkedin.com -site:naukri.com',
+            f'({kw_or}) "we are hiring" OR "join our team" {c} -site:linkedin.com',
+        ]
+
+    @staticmethod
+    def _name_from_domain(domain: str) -> str:
+        """Extract a readable company name from a domain."""
+        # Strip TLD and subdomains: e.g. "careers.mamaearth.in" → "Mamaearth"
+        parts = domain.split(".")
+        # Take the last meaningful word before the TLD
+        candidates = [p for p in parts if p not in ("www", "careers", "jobs", "in", "com", "co", "io")]
+        name = candidates[0] if candidates else domain
+        return name.replace("-", " ").replace("_", " ").title()
+
+    def _sync_db_companies_to_json(self) -> None:
+        """Merge DB company list into job_sources.json user_companies array."""
+        try:
+            if not self._app:
+                return
+            with self._app.app_context():
+                from models.database import CompanySource
+                db_list = CompanySource.all_as_list()
+
+            try:
+                with open(SOURCES_PATH) as f:
+                    sources = json.load(f)
+            except Exception:
+                sources = {}
+
+            existing = {c.get("careers", "") for c in sources.get("user_companies", [])}
+            new_entries = [c for c in db_list if c["careers"] not in existing]
+            sources.setdefault("user_companies", []).extend(new_entries)
+
+            with open(SOURCES_PATH, "w") as f:
+                json.dump(sources, f, indent=2)
+
+            if new_entries:
+                logger.debug(f"[Discovery] Synced {len(new_entries)} new companies to job_sources.json")
+        except Exception as e:
+            logger.warning(f"[Discovery] JSON sync error: {e}")
 
     # ── Scan memory ────────────────────────────────────────────────────────────
 

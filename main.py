@@ -1061,6 +1061,25 @@ def create_app():
         from services.job_scanner import job_scanner
         return jsonify(job_scanner.stop())
 
+    @app.route("/scanner/discover", methods=["POST"])
+    @login_required
+    def scanner_discover():
+        """Trigger a one-shot company discovery pass (runs in background thread)."""
+        from services.job_scanner import job_scanner
+        if not job_scanner._app:
+            job_scanner._app = app
+        import threading as _t
+        def _run():
+            try:
+                job_scanner._discovery_pass()
+            except Exception as e:
+                logger.warning(f"[Discovery] Manual pass error: {e}")
+            finally:
+                if not job_scanner.is_running:
+                    job_scanner.stats.status = "idle"
+        _t.Thread(target=_run, daemon=True, name="discovery_manual").start()
+        return jsonify({"started": True, "mode": "discovery"})
+
     @app.route("/scanner/status")
     @login_required
     def scanner_status():
