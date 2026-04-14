@@ -82,6 +82,24 @@ SKIP_LINK_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ── Career / jobs page detection ──────────────────────────────────────────────
+# Matches URLs that look like a company's careers landing page
+CAREER_PAGE_RE = re.compile(
+    r"/(career[s]?|job[s]?|join[- _]?us|work[- _]?with[- _]?us|"
+    r"open[- _]position[s]?|opportunit[yi][es]?|hiring|vacancies?|"
+    r"open[- _]role[s]?|we[- _]are[- _]hiring|life[- _]at|"
+    r"come[- _]work|grow[- _]with[- _]us)(/|$|\?)",
+    re.IGNORECASE,
+)
+
+# Anchor text that strongly suggests a "careers / jobs" navigation link
+CAREER_ANCHOR_RE = re.compile(
+    r"\b(career[s]?|jobs?|hiring|open\s+role[s]?|open\s+position[s]?|"
+    r"vacancies|join\s+(us|our\s+team)|work\s+with\s+us|"
+    r"life\s+at|we['']?re\s+hiring|opportunities)\b",
+    re.IGNORECASE,
+)
+
 # ── Job-posting URL heuristics ─────────────────────────────────────────────────
 JOB_URL_RE = re.compile(
     r"(/job[s]?/|/position[s]?/|/opening[s]?/|/vacancies?/|/apply/|"
@@ -92,6 +110,15 @@ JOB_URL_RE = re.compile(
     r"taleo\.net/|icims\.com/|bamboohr\.com/careers/|"
     r"recruit\.zoho\.com/|instahyre\.com/job/|cutshort\.io/job|"
     r"wellfound\.com/jobs/|/careers/[a-z0-9_-]{4,}$)",
+    re.IGNORECASE,
+)
+
+# Anchor text that hints a link points to an individual job posting
+JOB_ANCHOR_RE = re.compile(
+    r"\b(apply|view\s+job|see\s+role|view\s+role|open\s+position|"
+    r"job\s+opening|learn\s+more|see\s+details|full\s+description|"
+    r"performance\s+market|paid\s+media|digital\s+market|growth\s+market|"
+    r"media\s+manager|media\s+lead|biddable|programmatic)\b",
     re.IGNORECASE,
 )
 
@@ -156,46 +183,91 @@ def _l0_seniority(title: str, text_snippet: str = "") -> str | None:
     return None
 
 
-# ── L1a : PM keyword density ──────────────────────────────────────────────────
+# ── L1a : PM semantic keyword cloud ──────────────────────────────────────────
 #
-# Job text must hit ≥ MIN_PM_GROUPS distinct groups and ≥ MIN_PM_HITS total.
+# 9 clusters × rich synonyms.  A JD must hit ≥ MIN_PM_GROUPS distinct clusters
+# AND ≥ MIN_PM_HITS total keyword matches to pass.
+#
+# Design philosophy (per user):
+#   • Every brand uses slightly different terminology → broad synonyms per cluster
+#   • Presence of a keyword alone isn't enough → cross-cluster density required
+#   • "marketing" alone or "digital" alone must NOT pass the gate
 _PM_GROUPS: list[re.Pattern] = [
-    # Group 0 — role-name terms
+    # ── Cluster 0 — Role / title identifiers (definitive PM signals) ──────────
     re.compile(
-        r"(performance\s+marketing|paid\s+media|media\s+manag|media\s+lead|"
-        r"biddable\s+media|programmatic|performance\s+lead|digital\s+performance|"
-        r"growth\s+marketing|demand\s+gen(eration)?)",
+        r"(performance\s+marketing|paid\s+media\s+manag|paid\s+media\s+lead|"
+        r"biddable\s+media|digital\s+performance|performance\s+lead|"
+        r"growth\s+market|demand\s+gen(eration)?|user\s+acquisition|"
+        r"performance\s+manag|media\s+buying\s+manag|media\s+buying\s+lead|"
+        r"performance\s+campaigns|paid\s+performance|"
+        r"acquisition\s+market|d2c\s+market|ecomm(erce)?\s+market)",
         re.IGNORECASE,
     ),
-    # Group 1 — paid search / PPC
+    # ── Cluster 1 — Paid Search / SEM / PPC ───────────────────────────────────
     re.compile(
-        r"(\bppc\b|sem\b|paid\s+search|google\s+ads|search\s+ads|"
-        r"adwords|keyword\s+bid)",
+        r"(\bppc\b|\bsem\b|paid\s+search|google\s+ads|\bgoogle\s+adwords\b|"
+        r"search\s+ads|search\s+campaigns|keyword\s+bid|"
+        r"shopping\s+ads|performance\s+max|p\s*max\b|"
+        r"bing\s+ads|microsoft\s+ads|search\s+advertising)",
         re.IGNORECASE,
     ),
-    # Group 2 — paid social
+    # ── Cluster 2 — Paid Social ────────────────────────────────────────────────
     re.compile(
         r"(meta\s+ads|facebook\s+ads|instagram\s+ads|paid\s+social|"
-        r"social\s+advertising|tiktok\s+ads)",
+        r"social\s+advert|tiktok\s+ads|snapchat\s+ads|pinterest\s+ads|"
+        r"twitter\s+ads|x\s+ads|linkedin\s+ads|social\s+media\s+buying|"
+        r"social\s+media\s+advert)",
         re.IGNORECASE,
     ),
-    # Group 3 — tools / channels
+    # ── Cluster 3 — Programmatic / Display / Video ────────────────────────────
     re.compile(
-        r"(youtube\s+ads|display\s+adv|dv360|campaign\s+manager|"
-        r"\bdsp\b|\brtb\b|trade\s+desk|programmatic\s+buying)",
+        r"(\bdv360\b|display\s+advert|display\s+campaign|"
+        r"campaign\s+manager\s+360|\bcm360\b|\bdsp\b|\brtb\b|"
+        r"the\s+trade\s+desk|\bttd\b|programmatic\s+buying|"
+        r"programmatic\s+advert|youtube\s+ads|connected\s+tv|\bctv\b|"
+        r"video\s+campaign|ott\s+advert)",
         re.IGNORECASE,
     ),
-    # Group 4 — KPIs / performance metrics
+    # ── Cluster 4 — Performance KPIs / Metrics ────────────────────────────────
     re.compile(
-        r"(\broas\b|\bcpa\b|\bcpl\b|\bcpc\b|\bctr\b|\broi\b|"
-        r"cost\s+per\s+acquisition|return\s+on\s+ad\s+spend|"
-        r"conversion\s+rate|funnel\s+optimis)",
+        r"(\broas\b|\bcpa\b|\bcpl\b|\bcpc\b|\bctr\b|\bcpm\b|\broi\b|"
+        r"return\s+on\s+ad\s+spend|cost\s+per\s+acqui|cost\s+per\s+lead|"
+        r"cost\s+per\s+click|conversion\s+rate|funnel\s+optimis|"
+        r"media\s+efficiency|\bacos\b|blended\s+roas|northstar\s+metric|"
+        r"marketing\s+efficiency|mer\b)",
         re.IGNORECASE,
     ),
-    # Group 5 — analytics
+    # ── Cluster 5 — Analytics / Attribution / Tracking ───────────────────────
     re.compile(
-        r"(google\s+analytics|\bga4\b|data\s+studio|looker|attribution|"
-        r"a/b\s+test|split\s+test|\bpixel\b|tracking\s+setup)",
+        r"(google\s+analytics|\bga4\b|data\s+studio|looker\s+studio|"
+        r"\battribution\b|a/?b\s+test|split\s+test|\bpixel\b|"
+        r"tracking\s+setup|utm\s+param|appsflyer|adjust\b|branch\b|"
+        r"moengage|clevertap|amplitude\b|mixpanel|"
+        r"incrementality|media\s+mix\s+model|\bmmm\b)",
+        re.IGNORECASE,
+    ),
+    # ── Cluster 6 — Budget / Planning / Strategy ──────────────────────────────
+    re.compile(
+        r"(media\s+plan|budget\s+allocat|campaign\s+plan|ad\s+spend|"
+        r"monthly\s+budget|annual\s+budget|media\s+budget|"
+        r"media\s+strategy|channel\s+mix|media\s+mix|"
+        r"forecasting|pacing|spend\s+optimis|bid\s+strateg)",
+        re.IGNORECASE,
+    ),
+    # ── Cluster 7 — Agency / Vendor management ────────────────────────────────
+    re.compile(
+        r"(agency\s+manag|vendor\s+manag|media\s+agency|digital\s+agency|"
+        r"google\s+partner|meta\s+partner|platform\s+partner|"
+        r"creative\s+testing|ad\s+creative|creative\s+optimis|"
+        r"campaign\s+execut|campaign\s+manag|campaign\s+optimis)",
+        re.IGNORECASE,
+    ),
+    # ── Cluster 8 — Growth / Funnel / CRM ────────────────────────────────────
+    re.compile(
+        r"(full[- ]funnel|tofu\b|mofu\b|bofu\b|retargeting|remarketing|"
+        r"audience\s+segm|lookalike\s+audience|customer\s+acqui|"
+        r"retention\s+market|lifecycle\s+market|crm\s+integrat|"
+        r"lead\s+gen(eration)?|inbound\s+market|growth\s+hack)",
         re.IGNORECASE,
     ),
 ]
@@ -827,73 +899,223 @@ class JobScanner:
             ("Lever Public Board",   f"https://jobs.lever.co/?search={kw}"),
         ]
 
+    # ── Career page discovery ──────────────────────────────────────────────────
+
+    def _find_careers_page(self, base_url: str) -> str | None:
+        """
+        Given a company's main or arbitrary URL, try to find their actual
+        careers / jobs page.
+
+        Strategy (in order):
+          1. If the URL already looks like a careers/jobs page → use it as-is.
+          2. Try common path suffixes (/careers, /jobs, /join-us, etc.).
+          3. Fetch the homepage and look for career-related navigation links.
+
+        Returns the best candidate URL or None.
+        """
+        parsed   = urlparse(base_url)
+        base_dom = parsed.netloc
+        origin   = f"{parsed.scheme}://{base_dom}"
+
+        # ── Step 1: already a careers page? ───────────────────────────────────
+        if CAREER_PAGE_RE.search(parsed.path):
+            return base_url
+
+        # ── Step 2: try standard paths ────────────────────────────────────────
+        common_paths = [
+            "/careers", "/jobs", "/join-us", "/work-with-us",
+            "/careers/", "/jobs/", "/open-roles", "/openings",
+            "/opportunities", "/hiring", "/life-at",
+        ]
+        for path in common_paths:
+            candidate = origin + path
+            try:
+                r = requests.head(
+                    candidate, headers=HEADERS,
+                    timeout=8, allow_redirects=True
+                )
+                if r.status_code == 200:
+                    logger.debug(f"[Discover] Career page found via HEAD: {candidate}")
+                    return candidate
+            except Exception:
+                continue
+
+        # ── Step 3: scrape homepage for career nav links ───────────────────────
+        try:
+            r = requests.get(base_url, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+            if r.status_code != 200:
+                return None
+            soup = BeautifulSoup(r.text, "html.parser")
+            best: str | None = None
+            for tag in soup.find_all("a", href=True):
+                href   = tag["href"].strip()
+                abs_u  = urljoin(base_url, href)
+                anchor = tag.get_text(separator=" ", strip=True)
+                if SKIP_LINK_RE.search(abs_u):
+                    continue
+                # Prioritise URL-based match over anchor-text match
+                if CAREER_PAGE_RE.search(urlparse(abs_u).path):
+                    return abs_u
+                if best is None and CAREER_ANCHOR_RE.search(anchor):
+                    best = abs_u
+            return best
+        except Exception:
+            return None
+
+    def _google_company_jobs(
+        self, name: str, domain: str, keywords: list[str]
+    ) -> list[str]:
+        """
+        Google fallback: when a company has no crawlable career page,
+        search Google for recent job postings from that brand.
+
+        Searches:
+          1. site:[domain] careers OR jobs OR hiring
+          2. "[name]" performance marketing jobs Mumbai apply
+        """
+        kw0 = keywords[0] if keywords else "Performance Marketing"
+        kw_or = " OR ".join(f'"{k}"' for k in keywords[:3])
+        results: list[str] = []
+
+        q1 = f'site:{domain} (careers OR jobs OR hiring OR "open roles")'
+        q2 = f'"{name}" ({kw_or}) job apply -site:linkedin.com -site:naukri.com'
+
+        for q in (q1, q2):
+            urls = _google_search(q, num=6)
+            for u in urls:
+                if u not in results:
+                    results.append(u)
+            time.sleep(2.0)
+
+        logger.debug(f"[GoogleFallback] {name}: {len(results)} URLs via Google")
+        return results[:10]
+
     # ── Career page crawl ──────────────────────────────────────────────────────
 
     def _crawl_source(self, source: dict, settings: dict):
-        name       = source["name"]
-        url        = source["url"]
-        jobs_before = self.stats.jobs_saved   # track new jobs found from this source
+        """
+        Smart career page crawler.  For each source:
+
+          Phase A — Discover the careers page
+            • If the URL already has /careers /jobs / etc. → use it directly
+            • Try common path suffixes (HEAD requests, fast)
+            • Scrape homepage looking for career nav links
+
+          Phase B — Extract job links from the careers page
+            • ATS platform patterns (Lever, Greenhouse, Workday …)
+            • Same-domain links with job-like URL segments
+            • Any link whose anchor text contains job-related keywords
+
+          Phase C — Google fallback
+            • If Phase B yields 0 candidates, search Google for the company
+              name + performance marketing keywords to find postings elsewhere
+
+          Phase D — Evaluate each candidate through the 7-layer pipeline
+        """
+        name        = source["name"]
+        url         = source["url"]
+        stype       = source.get("type", "career_page")
+        jobs_before = self.stats.jobs_saved
         self.stats.current_source = name
         self.stats.sources_checked += 1
 
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=True)
-            if resp.status_code != 200:
-                return
-        except Exception as e:
-            logger.debug(f"[Scanner] Fetch {url}: {e}")
-            return
+        # ── Phase A: Find the real careers page (skip for portal search results)
+        careers_url = url
+        if stype != "search_results":
+            discovered = self._find_careers_page(url)
+            if discovered:
+                careers_url = discovered
+                if discovered != url:
+                    logger.debug(f"[Discover] {name}: {url} → {discovered}")
+            else:
+                logger.debug(f"[Discover] {name}: no career page found at {url}")
 
-        soup     = BeautifulSoup(resp.text, "html.parser")
-        base_dom = urlparse(url).netloc
+        # ── Phase B: Extract job link candidates from careers page ─────────────
         candidates: list[str] = []
 
-        for tag in soup.find_all("a", href=True):
-            href        = tag["href"].strip()
-            abs_url     = urljoin(url, href)
-            anchor_text = (tag.get_text(separator=" ") or "").strip()
-
-            if SKIP_LINK_RE.search(abs_url):
-                continue
-
-            parsed    = urlparse(abs_url)
-            same_dom  = (
-                parsed.netloc == base_dom
-                or parsed.netloc.endswith("." + base_dom)
-                or base_dom.endswith("." + parsed.netloc)
+        try:
+            resp = requests.get(
+                careers_url, headers=HEADERS,
+                timeout=REQUEST_TIMEOUT, allow_redirects=True
             )
-            is_ats = bool(JOB_URL_RE.search(abs_url))
+            if resp.status_code != 200:
+                resp = None
+        except Exception as e:
+            logger.debug(f"[Scanner] Fetch {careers_url}: {e}")
+            resp = None
 
-            if source["type"] == "search_results":
-                if not is_ats:
+        if resp:
+            soup     = BeautifulSoup(resp.text, "html.parser")
+            base_dom = urlparse(careers_url).netloc
+            seen_cands: set[str] = set()
+
+            for tag in soup.find_all("a", href=True):
+                href        = tag["href"].strip()
+                abs_url     = urljoin(careers_url, href)
+                anchor_text = tag.get_text(separator=" ", strip=True)
+
+                if SKIP_LINK_RE.search(abs_url):
                     continue
-            else:
-                if not (same_dom or is_ats) or not JOB_URL_RE.search(abs_url):
+                if abs_url in seen_cands:
                     continue
 
-            # Quick seniority pre-check on anchor text and URL (free, no fetch)
-            pre_text = anchor_text + " " + abs_url
-            if _TOO_JUNIOR_RE.search(pre_text):
-                self.stats.skipped_junior += 1
-                continue
-            if _TOO_SENIOR_RE.search(pre_text):
-                self.stats.skipped_senior += 1
-                continue
+                parsed   = urlparse(abs_url)
+                same_dom = (
+                    parsed.netloc == base_dom
+                    or parsed.netloc.endswith("." + base_dom)
+                    or base_dom.endswith("." + parsed.netloc)
+                )
+                is_ats       = bool(JOB_URL_RE.search(abs_url))
+                career_link  = bool(CAREER_PAGE_RE.search(parsed.path))
+                job_anchor   = bool(JOB_ANCHOR_RE.search(anchor_text))
 
-            candidates.append(abs_url)
+                # For portal search results: only follow ATS links
+                if stype == "search_results":
+                    if not is_ats:
+                        continue
+                else:
+                    # Accept link if it matches any strong signal:
+                    #  • Known ATS URL pattern
+                    #  • Same domain + career-page path
+                    #  • Same domain + job-like anchor text
+                    if not (is_ats or (same_dom and (career_link or job_anchor))):
+                        continue
+
+                # Quick seniority pre-screen (no network call)
+                pre_text = anchor_text + " " + abs_url
+                if _TOO_JUNIOR_RE.search(pre_text):
+                    self.stats.skipped_junior += 1
+                    continue
+                if _TOO_SENIOR_RE.search(pre_text):
+                    self.stats.skipped_senior += 1
+                    continue
+
+                seen_cands.add(abs_url)
+                candidates.append(abs_url)
+
+        # ── Phase C: Google fallback if no candidates on site ─────────────────
+        if not candidates and stype != "search_results":
+            parsed = urlparse(url)
+            domain = parsed.netloc
+            logger.info(f"[Scanner] {name}: no job links on site — trying Google fallback")
+            google_urls = self._google_company_jobs(
+                name, domain, settings.get("search_keywords", [])
+            )
+            candidates.extend(google_urls)
 
         self.stats.links_found += len(candidates)
 
+        # ── Phase D: Pipeline evaluation ──────────────────────────────────────
         for job_url in candidates[:MAX_JOBS_PER_SOURCE]:
             if not self._running:
                 break
             self._run_pipeline(job_url, settings)
             time.sleep(DELAY_BETWEEN_PAGES)
 
-        # Record how many new jobs this source yielded so we can prioritise
-        # it correctly on the next pass.
         jobs_delta = self.stats.jobs_saved - jobs_before
         self._update_source_memory(url, jobs_delta)
+        if jobs_delta:
+            logger.info(f"[Scanner] ✦ {name}: {jobs_delta} new job(s) found")
 
     # ── Full evaluation pipeline ──────────────────────────────────────────────
 

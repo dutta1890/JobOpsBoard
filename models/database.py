@@ -97,6 +97,31 @@ class Application(db.Model):
         return f"<Application {self.company} - {self.role}>"
 
 
+class UserProfile(db.Model):
+    """Single-row table that stores the user's profile / CV text."""
+    __tablename__ = "user_profile"
+
+    id      = db.Column(db.Integer, primary_key=True)
+    cv_text = db.Column(db.Text, default="")
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    @classmethod
+    def get(cls) -> "UserProfile":
+        row = cls.query.first()
+        if row is None:
+            row = cls(cv_text="")
+            db.session.add(row)
+            db.session.commit()
+        return row
+
+    @classmethod
+    def set_cv(cls, text: str) -> None:
+        row = cls.get()
+        row.cv_text = text
+        row.updated_at = datetime.utcnow()
+        db.session.commit()
+
+
 class ScanHistory(db.Model):
     __tablename__ = "scan_history"
 

@@ -1179,7 +1179,16 @@ def create_app():
         if not text:
             return jsonify({"error": "No text could be extracted from the file"}), 400
 
-        JobScanner.save_settings({"cv_text": text})
+        from services.job_scanner import JobScanner as _JS
+        _JS.save_settings({"cv_text": text})
+
+        try:
+            from models.database import db, UserProfile
+            with app.app_context():
+                UserProfile.set_cv(text)
+        except Exception as _db_err:
+            logger.warning(f"CV DB save failed (settings file already updated): {_db_err}")
+
         return jsonify({"success": True, "cv_text": text, "chars": len(text)})
 
     @app.route("/api/scanner/recent")
